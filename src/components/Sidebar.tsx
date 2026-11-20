@@ -21,12 +21,18 @@ import {
   sanitizeSubredditName,
   searchSubreddits,
 } from '../lib/reddit';
-import { lookupXProfile, sanitizeXHandle } from '../lib/x';
+import {
+  POPULAR_X_TOPICS,
+  lookupXProfile,
+  sanitizeXHandle,
+  sanitizeXTopic,
+} from '../lib/x';
 import { SubfeedIcon } from './SubfeedIcon';
 
 interface SidebarProps {
   subreddits: string[];
   xAccounts: string[];
+  xTopics: string[];
   activeView: ActiveView;
   savedCount: number;
   user: AuthUser | null;
@@ -38,6 +44,8 @@ interface SidebarProps {
   onRemoveSubreddit: (name: string) => void;
   onAddXAccount: (handle: string) => void;
   onRemoveXAccount: (handle: string) => void;
+  onAddXTopic: (topic: string) => void;
+  onRemoveXTopic: (topic: string) => void;
   onOpenProfile: () => void;
   onOpenSettings: () => void;
   onOpenShortcuts: () => void;
@@ -47,6 +55,7 @@ interface SidebarProps {
 export function Sidebar({
   subreddits,
   xAccounts,
+  xTopics,
   activeView,
   savedCount,
   user,
@@ -58,12 +67,14 @@ export function Sidebar({
   onRemoveSubreddit,
   onAddXAccount,
   onRemoveXAccount,
+  onAddXTopic,
+  onRemoveXTopic,
   onOpenProfile,
   onOpenSettings,
   onOpenShortcuts,
   onCloseMobile,
 }: SidebarProps) {
-  const [addMode, setAddMode] = useState<'reddit' | 'x'>('reddit');
+  const [addMode, setAddMode] = useState<'reddit' | 'x' | 'topic'>('reddit');
   const [inputValue, setInputValue] = useState('');
   const [suggestions, setSuggestions] = useState<SubredditSuggestion[]>([]);
   const [xPreview, setXPreview] = useState<XProfilePreview | null>(null);
@@ -73,6 +84,7 @@ export function Sidebar({
   const [feedback, setFeedback] = useState<string | null>(null);
   const [subredditsOpen, setSubredditsOpen] = useState(true);
   const [xAccountsOpen, setXAccountsOpen] = useState(true);
+  const [xTopicsOpen, setXTopicsOpen] = useState(true);
   const [avatarFailed, setAvatarFailed] = useState(false);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
 
@@ -110,7 +122,7 @@ export function Sidebar({
         clearTimeout(timer);
         controller.abort();
       };
-    } else {
+    } else if (addMode === 'x') {
       setSuggestions([]);
       const clean = sanitizeXHandle(inputValue);
       if (clean.length < 2) {
@@ -135,6 +147,11 @@ export function Sidebar({
         clearTimeout(timer);
         controller.abort();
       };
+    } else {
+      setSuggestions([]);
+      setXPreview(null);
+      setIsSearching(false);
+      return () => controller.abort();
     }
   }, [inputValue, addMode]);
 
@@ -149,8 +166,11 @@ export function Sidebar({
   }, []);
 
   const handleInputChange = (raw: string) => {
-    // Auto-detect @handle or x.com / twitter.com URLs vs r/ or reddit.com URLs
-    if (
+    // Auto-detect #topic, @handle / x.com URLs, or r/ / reddit.com URLs
+    if (raw.startsWith('#')) {
+      if (addMode !== 'topic') setAddMode('topic');
+      setInputValue(raw.slice(1));
+    } else if (
       raw.startsWith('@') ||
       /^https?:\/\/(www\.|mobile\.)?(x|twitter)\.com\//i.test(raw)
     ) {
@@ -219,8 +239,35 @@ export function Sidebar({
     setFeedback(null);
   };
 
+  const commitXTopic = (rawTopic: string) => {
+    const clean = sanitizeXTopic(rawTopic);
+    if (!clean) {
+      setFeedback('Enter a valid topic or keyword');
+      return;
+    }
+    const existing = xTopics.find(
+      (t) => t.toLowerCase() === clean.toLowerCase()
+    );
+    if (existing) {
+      setFeedback(`#${existing} is already in your list`);
+      onSelectView({ type: 'topic', topic: existing });
+      setInputValue('');
+      setShowDropdown(false);
+      return;
+    }
+    onAddXTopic(clean);
+    setXTopicsOpen(true);
+    setInputValue('');
+    setShowDropdown(false);
+    setFeedback(null);
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (addMode === 'topic') {
+      commitXTopic(inputValue);
+      return;
+    }
     if (addMode === 'x') {
       commitXAccount(xPreview?.handle || inputValue);
       return;
@@ -254,9 +301,13 @@ export function Sidebar({
     }
   };
 
-  const totalSources = subreddits.length + xAccounts.length;
+  const totalSources = subreddits.length + xAccounts.length + xTopics.length;
   const cleanXQuery = sanitizeXHandle(inputValue);
   const cleanRedditQuery = sanitizeSubredditName(inputValue);
+  const cleanTopicQuery = sanitizeXTopic(inputValue);
+  const matchingPopularTopics = POPULAR_X_TOPICS.filter((t) =>
+    cleanTopicQuery ? t.toLowerCase().includes(cleanTopicQuery.toLowerCase()) : true
+  ).slice(0, 6);
   const userInitial = (user?.displayName || user?.email || 'M')
     .trim()
     .slice(0, 1)
@@ -341,22 +392,26 @@ export function Sidebar({
         </button>
       </div>
 
-      {/* Unified Add Subreddit / X Handle Control */}
+      {/* Unified Add Subreddit / X Handle / Topic Control */}
       <div className="p-3 border-b border-[var(--sf-border)]" ref={dropdownRef}>
         <form onSubmit={handleSubmit} className="relative">
           <div className="flex items-center bg-[var(--sf-surface)] border border-[var(--sf-border)] focus-within:border-[var(--sf-border-strong)] rounded-md transition-colors glass:backdrop-blur-md">
             <button
               type="button"
               onClick={() => {
-                setAddMode((m) => (m === 'reddit' ? 'x' : 'reddit'));
+                setAddMode((m) =>
+                  m === 'reddit' ? 'x' : m === 'x' ? 'topic' : 'reddit'
+                );
                 setFeedback(null);
                 addInputRef.current?.focus();
               }}
-              title="Switch between Reddit (r/) and X (@)"
-              aria-label={`Switch add mode (currently ${addMode === 'reddit' ? 'Reddit' : 'X'})`}
-              className="pl-2.5 pr-1.5 py-2 text-[12px] font-medium text-[var(--sf-text-muted)] hover:text-[var(--sf-accent)] transition-colors shrink-0 border-r border-[var(--sf-border-subtle)]"
+              title="Switch between Subreddit (r/), X Account (@), and Topic (#)"
+              aria-label={`Switch add mode (currently ${
+                addMode === 'reddit' ? 'Subreddit' : addMode === 'x' ? 'X Account' : 'X Topic'
+              })`}
+              className="pl-2.5 pr-1.5 py-2 text-[12px] font-medium text-[var(--sf-text-muted)] hover:text-[var(--sf-accent)] transition-colors shrink-0 border-r border-[var(--sf-border-subtle)] min-w-[34px] text-center"
             >
-              {addMode === 'reddit' ? 'r/' : '@'}
+              {addMode === 'reddit' ? 'r/' : addMode === 'x' ? '@' : '#'}
             </button>
             <input
               ref={addInputRef}
@@ -365,15 +420,33 @@ export function Sidebar({
               onChange={(e) => handleInputChange(e.target.value)}
               onFocus={() => setShowDropdown(true)}
               onKeyDown={handleKeyDown}
-              placeholder={addMode === 'reddit' ? 'add subreddit' : 'add x handle'}
-              aria-label={addMode === 'reddit' ? 'Add subreddit to your list' : 'Add X account to your list'}
+              placeholder={
+                addMode === 'reddit'
+                  ? 'add subreddit'
+                  : addMode === 'x'
+                    ? 'add x handle'
+                    : 'follow x topic'
+              }
+              aria-label={
+                addMode === 'reddit'
+                  ? 'Add subreddit to your list'
+                  : addMode === 'x'
+                    ? 'Add X account to your list'
+                    : 'Follow X topic'
+              }
               autoComplete="off"
               spellCheck={false}
               className="w-full py-2 px-2 text-[12.5px] bg-transparent text-[var(--sf-text)] placeholder:text-[var(--sf-text-muted)]/70 focus:outline-none"
             />
             <button
               type="submit"
-              aria-label={addMode === 'reddit' ? 'Add subreddit' : 'Add X account'}
+              aria-label={
+                addMode === 'reddit'
+                  ? 'Add subreddit'
+                  : addMode === 'x'
+                    ? 'Add X account'
+                    : 'Follow topic'
+              }
               className="px-2.5 py-2 text-[var(--sf-text-muted)] hover:text-[var(--sf-accent)] transition-colors shrink-0"
             >
               <Plus className="w-3.5 h-3.5" />
@@ -494,6 +567,53 @@ export function Sidebar({
                 >
                   Add <span className="font-medium text-[var(--sf-text)]">@{cleanXQuery}</span>
                 </button>
+              )}
+            </div>
+          )}
+
+          {/* X Topic Suggestions Dropdown */}
+          {showDropdown && addMode === 'topic' && (
+            <div className="absolute left-0 right-0 top-full mt-1.5 z-30 bg-[var(--sf-surface-elevated)] border border-[var(--sf-border)] rounded-md shadow-xl overflow-hidden glass:backdrop-blur-2xl">
+              {cleanTopicQuery.length >= 1 && (
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    commitXTopic(cleanTopicQuery);
+                  }}
+                  className="w-full text-left px-3 py-2.5 text-[12px] text-[var(--sf-text-secondary)] hover:bg-[var(--sf-hover)] border-b border-[var(--sf-border-subtle)] transition-colors"
+                >
+                  Follow topic{' '}
+                  <span className="font-medium text-[var(--sf-text)]">#{cleanTopicQuery}</span>
+                </button>
+              )}
+              {matchingPopularTopics.length > 0 && (
+                <ul className="divide-y divide-[var(--sf-border-subtle)] max-h-56 overflow-y-auto">
+                  {matchingPopularTopics.map((topic) => {
+                    const isAdded = xTopics.some(
+                      (t) => t.toLowerCase() === topic.toLowerCase()
+                    );
+                    return (
+                      <li key={topic}>
+                        <button
+                          type="button"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            commitXTopic(topic);
+                          }}
+                          className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left hover:bg-[var(--sf-hover)] transition-colors"
+                        >
+                          <span className="text-[12.5px] font-medium text-[var(--sf-text)] truncate">
+                            #{topic}
+                          </span>
+                          <span className="text-[11px] text-[var(--sf-text-muted)] shrink-0">
+                            {isAdded ? 'added' : 'topic'}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
               )}
             </div>
           )}
@@ -666,6 +786,95 @@ export function Sidebar({
                             }}
                             aria-label={`Remove @${handle}`}
                             title={`Remove @${handle}`}
+                            className="absolute right-1.5 p-1 text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] opacity-100 lg:opacity-0 lg:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity rounded"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </section>
+
+        {/* X Topics Accordion */}
+        <section>
+          <button
+            type="button"
+            onClick={() => setXTopicsOpen((prev) => !prev)}
+            aria-expanded={xTopicsOpen}
+            className="w-full px-3 py-1.5 flex items-center justify-between rounded-md text-[11.5px] font-medium text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] hover:bg-[var(--sf-hover)] transition-colors"
+          >
+            <span className="flex items-center gap-1.5">
+              <ChevronDown
+                className={`w-3.5 h-3.5 transition-transform duration-150 ${
+                  xTopicsOpen ? 'rotate-0' : '-rotate-90'
+                }`}
+              />
+              <span>X Topics</span>
+            </span>
+            <span className="text-[11px] tabular-nums text-[var(--sf-text-muted)]/75">
+              {xTopics.length}
+            </span>
+          </button>
+
+          <AnimatePresence initial={false}>
+            {xTopicsOpen && (
+              <motion.div
+                key="x-topics-accordion"
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                className="overflow-hidden"
+              >
+                {xTopics.length === 0 ? (
+                  <p className="px-3 py-2 text-[11.5px] leading-relaxed text-[var(--sf-text-muted)]">
+                    Type #topic above to follow Nitter search topics.
+                  </p>
+                ) : (
+                  <ul className="mt-1 space-y-0.5">
+                    {xTopics.map((topic) => {
+                      const isActive =
+                        activeView.type === 'topic' &&
+                        activeView.topic.toLowerCase() === topic.toLowerCase();
+
+                      return (
+                        <li key={topic} className="group relative flex items-center">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onSelectView({ type: 'topic', topic });
+                              onCloseMobile();
+                            }}
+                            className={`w-full text-left pl-3 pr-9 py-1.5 text-[13px] rounded-md transition-colors truncate ${
+                              isActive
+                                ? 'bg-[var(--sf-active)] text-[var(--sf-text)] font-medium glass:shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]'
+                                : 'text-[var(--sf-text-secondary)] hover:text-[var(--sf-text)] hover:bg-[var(--sf-hover)]'
+                            }`}
+                          >
+                            <span
+                              className={
+                                isActive
+                                  ? 'text-[var(--sf-accent)]'
+                                  : 'text-[var(--sf-text-muted)]/75'
+                              }
+                            >
+                              #
+                            </span>
+                            {topic}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onRemoveXTopic(topic);
+                            }}
+                            aria-label={`Remove #${topic}`}
+                            title={`Remove #${topic}`}
                             className="absolute right-1.5 p-1 text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] opacity-100 lg:opacity-0 lg:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity rounded"
                           >
                             <X className="w-3.5 h-3.5" />

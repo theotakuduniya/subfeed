@@ -25,6 +25,7 @@ model User {
 
   subreddits FollowedSubreddit[]
   xAccounts  FollowedXAccount[]
+  xTopics    FollowedTopic[]
   savedPosts SavedPost[]
   readPosts  ReadPost[]
 }
@@ -52,6 +53,19 @@ model FollowedXAccount {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, handle])
+  @@index([userId, position])
+}
+
+model FollowedTopic {
+  id        String   @id @default(cuid())
+  userId    String
+  topic     String
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, topic])
   @@index([userId, position])
 }
 

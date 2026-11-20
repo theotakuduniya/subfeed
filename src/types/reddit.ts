@@ -24,6 +24,7 @@ export type ActiveView =
   | { type: 'all' }
   | { type: 'subreddit'; name: string }
   | { type: 'x'; handle: string }
+  | { type: 'topic'; topic: string }
   | { type: 'saved' };
 
 export interface QuotedPost {

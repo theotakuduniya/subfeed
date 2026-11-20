@@ -21,10 +21,12 @@ import {
 } from './lib/reddit';
 import {
   DEFAULT_X_ACCOUNTS,
+  DEFAULT_X_TOPICS,
   fetchXFeed,
   getCachedXFeed,
   mergeAndRankFeeds,
   sanitizeXHandle,
+  sanitizeXTopic,
 } from './lib/x';
 import { cacheClearAll } from './lib/cache';
 import {
@@ -54,6 +56,7 @@ import { usePullToRefresh } from './hooks/usePullToRefresh';
 const STORAGE_KEYS = {
   subreddits: 'subfeed:subreddits',
   xAccounts: 'subfeed:xAccounts',
+  xTopics: 'subfeed:xTopics',
   saved: 'subfeed:saved',
   read: 'subfeed:read',
   theme: 'subfeed:theme',
@@ -104,6 +107,20 @@ function readStoredXAccounts(): string[] {
     // Ignore storage errors
   }
   return DEFAULT_X_ACCOUNTS;
+}
+
+function readStoredXTopics(): string[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.xTopics);
+    if (!raw) return DEFAULT_X_TOPICS;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.map((item) => sanitizeXTopic(String(item))).filter(Boolean);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  return DEFAULT_X_TOPICS;
 }
 
 function readStoredSavedPosts(): RedditPost[] {
@@ -205,6 +222,7 @@ function readStoredSourceFilter(): SourceFilter {
 export default function App() {
   const [subreddits, setSubreddits] = useState<string[]>(readStoredSubreddits);
   const [xAccounts, setXAccounts] = useState<string[]>(readStoredXAccounts);
+  const [xTopics, setXTopics] = useState<string[]>(readStoredXTopics);
   const [savedPosts, setSavedPosts] = useState<RedditPost[]>(readStoredSavedPosts);
   const [readPostIds, setReadPostIds] = useState<string[]>(readStoredReadPostIds);
   const [theme, setTheme] = useState<ThemeOption>(readStoredTheme);
@@ -249,6 +267,7 @@ export default function App() {
   const latestLocalRef = useRef({
     subreddits,
     xAccounts,
+    xTopics,
     readPostIds,
     savedPosts,
     theme,
@@ -262,6 +281,7 @@ export default function App() {
   latestLocalRef.current = {
     subreddits,
     xAccounts,
+    xTopics,
     readPostIds,
     savedPosts,
     theme,
@@ -308,6 +328,7 @@ export default function App() {
     bootstrapUserState({
       subreddits: snapshot.subreddits,
       xAccounts: snapshot.xAccounts,
+      xTopics: snapshot.xTopics,
       savedPosts: snapshot.savedPosts,
       readPostIds: snapshot.readPostIds,
       preferences: {
@@ -324,6 +345,7 @@ export default function App() {
         hydratingCloudRef.current = true;
         setSubreddits(cloudState.subreddits);
         setXAccounts(cloudState.xAccounts);
+        setXTopics(Array.isArray(cloudState.xTopics) ? cloudState.xTopics : []);
         setSavedPosts(cloudState.savedPosts);
         setReadPostIds(cloudState.readPostIds);
         setTheme(cloudState.preferences.theme);
@@ -392,6 +414,14 @@ export default function App() {
 
   useEffect(() => {
     try {
+      localStorage.setItem(STORAGE_KEYS.xTopics, JSON.stringify(xTopics));
+    } catch {
+      // Ignore
+    }
+  }, [xTopics]);
+
+  useEffect(() => {
+    try {
       localStorage.setItem(STORAGE_KEYS.saved, JSON.stringify(savedPosts));
     } catch {
       // Ignore
@@ -454,10 +484,11 @@ export default function App() {
       void syncUserFeedsToServer({
         subreddits,
         xAccounts,
+        xTopics,
       }).catch((err) => console.error('Failed to sync feeds:', err));
     }, 350);
     return () => clearTimeout(timer);
-  }, [user, cloudReady, subreddits, xAccounts]);
+  }, [user, cloudReady, subreddits, xAccounts, xTopics]);
 
   // Sync display & feed preferences to PostgreSQL when signed in
   useEffect(() => {
@@ -491,6 +522,12 @@ export default function App() {
     return [];
   }, [activeView, sourceFilter, xAccounts]);
 
+  const activeXTopics = useMemo(() => {
+    if (activeView.type === 'topic') return [activeView.topic];
+    if (activeView.type === 'all' && sourceFilter !== 'reddit') return xTopics;
+    return [];
+  }, [activeView, sourceFilter, xTopics]);
+
   // Fetch unified or single-source feed with instant client caching & forceRefresh support
   useEffect(() => {
     const isManualRefresh = refreshNonce !== lastRefreshNonceRef.current;
@@ -509,7 +546,9 @@ export default function App() {
       return;
     }
 
-    if (activeSubreddits.length === 0 && activeXHandles.length === 0) {
+    const hasXSources = activeXHandles.length > 0 || activeXTopics.length > 0;
+
+    if (activeSubreddits.length === 0 && !hasXSources) {
       setPosts([]);
       setAfterCursor(null);
       setLoading(false);
@@ -520,12 +559,12 @@ export default function App() {
 
     if (!isManualRefresh) {
       const needReddit = activeSubreddits.length > 0;
-      const needX = activeXHandles.length > 0;
+      const needX = hasXSources;
       const cachedReddit = needReddit
         ? getCachedFeed(activeSubreddits, sort, timeframe)
         : null;
       const cachedX = needX
-        ? getCachedXFeed(activeXHandles, sort, timeframe)
+        ? getCachedXFeed(activeXHandles, activeXTopics, sort, timeframe)
         : null;
 
       if ((!needReddit || cachedReddit) && (!needX || cachedX)) {
@@ -563,17 +602,17 @@ export default function App() {
           })
         : Promise.resolve({ posts: [], after: null });
 
-    const xPromise =
-      activeXHandles.length > 0
-        ? fetchXFeed({
-            handles: activeXHandles,
-            sort,
-            timeframe,
-            limit: 25,
-            forceRefresh: isManualRefresh,
-            signal: controller.signal,
-          })
-        : Promise.resolve({ posts: [], after: null });
+    const xPromise = hasXSources
+      ? fetchXFeed({
+          handles: activeXHandles,
+          topics: activeXTopics,
+          sort,
+          timeframe,
+          limit: 25,
+          forceRefresh: isManualRefresh,
+          signal: controller.signal,
+        })
+      : Promise.resolve({ posts: [], after: null });
 
     Promise.allSettled([redditPromise, xPromise])
       .then(([redditRes, xRes]) => {
@@ -603,11 +642,13 @@ export default function App() {
           setAfterCursor(null);
           return;
         }
-        if (activeView.type === 'x' && !xOk) {
+        if ((activeView.type === 'x' || activeView.type === 'topic') && !xOk) {
           setError(
             xRes.reason instanceof Error
               ? xRes.reason.message
-              : 'Unable to load X account via Nitter.'
+              : activeView.type === 'topic'
+                ? 'Unable to load X topic via Nitter.'
+                : 'Unable to load X account via Nitter.'
           );
           setPosts([]);
           setAfterCursor(null);
@@ -631,7 +672,7 @@ export default function App() {
       });
 
     return () => controller.abort();
-  }, [activeView, activeSubreddits, activeXHandles, sort, timeframe, refreshNonce]);
+  }, [activeView, activeSubreddits, activeXHandles, activeXTopics, sort, timeframe, refreshNonce]);
 
   const handlePullRefresh = useCallback(() => {
     pendingPullRefreshRef.current = true;
@@ -641,7 +682,9 @@ export default function App() {
 
   const pullToRefreshDisabled =
     activeView.type === 'saved' ||
-    (activeSubreddits.length === 0 && activeXHandles.length === 0) ||
+    (activeSubreddits.length === 0 &&
+      activeXHandles.length === 0 &&
+      activeXTopics.length === 0) ||
     Boolean(selectedPost) ||
     showSettings ||
     showProfile ||
@@ -724,6 +767,16 @@ export default function App() {
     setActiveView({ type: 'x', handle: clean });
   }, []);
 
+  const handleAddXTopic = useCallback((rawTopic: string) => {
+    const clean = sanitizeXTopic(rawTopic);
+    if (!clean) return;
+    setXTopics((prev) => {
+      if (prev.some((t) => t.toLowerCase() === clean.toLowerCase())) return prev;
+      return [...prev, clean];
+    });
+    setActiveView({ type: 'topic', topic: clean });
+  }, []);
+
   const handleAddPack = useCallback((packSubs: string[]) => {
     setSubreddits((prev) => {
       const existing = new Set(prev.map((s) => s.toLowerCase()));
@@ -756,6 +809,21 @@ export default function App() {
       if (
         activeView.type === 'x' &&
         activeView.handle.toLowerCase() === handle.toLowerCase()
+      ) {
+        setActiveView({ type: 'all' });
+      }
+    },
+    [activeView]
+  );
+
+  const handleRemoveXTopic = useCallback(
+    (topic: string) => {
+      setXTopics((prev) =>
+        prev.filter((t) => t.toLowerCase() !== topic.toLowerCase())
+      );
+      if (
+        activeView.type === 'topic' &&
+        activeView.topic.toLowerCase() === topic.toLowerCase()
       ) {
         setActiveView({ type: 'all' });
       }
@@ -968,9 +1036,11 @@ export default function App() {
         ? 'Saved'
         : activeView.type === 'x'
           ? `@${activeView.handle}`
-          : `r/${activeView.name}`;
+          : activeView.type === 'topic'
+            ? `#${activeView.topic}`
+            : `r/${activeView.name}`;
 
-  const totalFollowed = subreddits.length + xAccounts.length;
+  const totalFollowed = subreddits.length + xAccounts.length + xTopics.length;
   const userInitial = (user?.displayName || user?.email || 'M')
     .trim()
     .slice(0, 1)
@@ -986,6 +1056,7 @@ export default function App() {
         <Sidebar
           subreddits={subreddits}
           xAccounts={xAccounts}
+          xTopics={xTopics}
           activeView={activeView}
           savedCount={savedPosts.length}
           user={user}
@@ -1001,6 +1072,8 @@ export default function App() {
           onRemoveSubreddit={handleRemoveSubreddit}
           onAddXAccount={handleAddXAccount}
           onRemoveXAccount={handleRemoveXAccount}
+          onAddXTopic={handleAddXTopic}
+          onRemoveXTopic={handleRemoveXTopic}
           onOpenProfile={() => setShowProfile(true)}
           onOpenSettings={() => setShowSettings(true)}
           onOpenShortcuts={() => setShowShortcuts(true)}
@@ -1180,7 +1253,7 @@ export default function App() {
                   Your feed list is empty
                 </h2>
                 <p className="mt-2 text-[13px] leading-relaxed text-[var(--sf-text-muted)]">
-                  Add any subreddit (r/...) or X account (@...) from the sidebar, or load a starter collection below.
+                  Add any subreddit (r/...), X account (@...), or X topic (#...) from the sidebar, or load a starter collection below.
                 </p>
 
                 <div className="mt-6 flex flex-wrap items-center justify-center gap-2.5">
@@ -1273,6 +1346,15 @@ export default function App() {
                       Remove @{activeView.handle}
                     </button>
                   )}
+                  {activeView.type === 'topic' && (
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveXTopic(activeView.topic)}
+                      className="px-4 py-2 text-[12.5px] text-[var(--sf-text-secondary)] border border-[var(--sf-border)] rounded-md hover:text-[var(--sf-text)] hover:border-[var(--sf-border-strong)] transition-colors"
+                    >
+                      Remove #{activeView.topic}
+                    </button>
+                  )}
                 </div>
               </div>
             ) : visiblePosts.length === 0 ? (
@@ -1292,7 +1374,9 @@ export default function App() {
                       ? 'Bookmark any post from your feed to keep it here for later reading.'
                       : activeView.type === 'x'
                         ? `Nitter returned no recent posts for @${activeView.handle}. Try refreshing or check that the account is public.`
-                        : 'Try adjusting the sort order or timeframe in Settings.'}
+                        : activeView.type === 'topic'
+                          ? `Nitter returned no recent posts for #${activeView.topic}. Try refreshing or following a broader keyword.`
+                          : 'Try adjusting the sort order or timeframe in Settings.'}
                 </p>
                 {filterQuery && (
                   <button
@@ -1349,6 +1433,7 @@ export default function App() {
                 {/* Pagination Footer */}
                 {activeView.type !== 'saved' &&
                   activeView.type !== 'x' &&
+                  activeView.type !== 'topic' &&
                   afterCursor &&
                   !filterQuery && (
                     <div className="py-8 flex justify-center">
@@ -1413,6 +1498,7 @@ export default function App() {
         syncing={cloudSyncing}
         subredditCount={subreddits.length}
         xAccountCount={xAccounts.length}
+        xTopicCount={xTopics.length}
         savedCount={savedPosts.length}
         readCount={readPostIds.length}
         onSignInGoogle={async () => {
@@ -1463,7 +1549,7 @@ export default function App() {
                 ['Esc', 'Close thread or dialog'],
                 ['b', 'Toggle sidebar'],
                 [',', 'Open settings'],
-                ['a', 'Add subreddit or @handle'],
+                ['a', 'Add r/, @handle, or #topic'],
                 ['/', 'Search current posts'],
                 ['r', 'Refresh feed'],
                 ['?', 'Toggle this menu'],

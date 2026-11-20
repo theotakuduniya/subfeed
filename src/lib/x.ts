@@ -13,6 +13,20 @@ const X_TWEET_CACHE_TTL_MS = 5 * 60 * 1000;
 const X_PROFILE_CACHE_TTL_MS = 10 * 60 * 1000;
 
 export const DEFAULT_X_ACCOUNTS = ['vercel', 'github'];
+export const DEFAULT_X_TOPICS = ['AI', 'webdev'];
+
+export const POPULAR_X_TOPICS = [
+  'AI',
+  'webdev',
+  'TypeScript',
+  'Design',
+  'Startups',
+  'OpenSource',
+  'Rust',
+  'React',
+  'IndieHackers',
+  'Cybersecurity',
+];
 
 export function sanitizeXHandle(input: string): string {
   return input
@@ -24,25 +38,40 @@ export function sanitizeXHandle(input: string): string {
     .slice(0, 20);
 }
 
+export function sanitizeXTopic(input: string): string {
+  return input
+    .trim()
+    .replace(/^#+/, '')
+    .replace(/[^\p{L}\p{N}\s_\-+.]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 48);
+}
+
 export function buildXFeedCacheKey(
   handles: string[],
+  topics: string[],
   sort: SortOption,
   timeframe: TimeframeOption
 ): string {
-  const normalized = Array.from(
+  const normHandles = Array.from(
     new Set(handles.map((h) => sanitizeXHandle(h).toLowerCase()).filter(Boolean))
   ).sort();
+  const normTopics = Array.from(
+    new Set(topics.map((t) => sanitizeXTopic(t).toLowerCase()).filter(Boolean))
+  ).sort();
   const tfPart = sort === 'top' || sort === 'controversial' ? timeframe : 'none';
-  return `xfeed:${normalized.join(',')}:${sort}:${tfPart}`;
+  return `xfeed:${normHandles.join(',')}|t:${normTopics.join(',')}:${sort}:${tfPart}`;
 }
 
 export function getCachedXFeed(
   handles: string[],
+  topics: string[],
   sort: SortOption,
   timeframe: TimeframeOption
 ): FeedResponse | null {
-  if (handles.length === 0) return null;
-  return cacheGet<FeedResponse>(buildXFeedCacheKey(handles, sort, timeframe));
+  if (handles.length === 0 && topics.length === 0) return null;
+  return cacheGet<FeedResponse>(buildXFeedCacheKey(handles, topics, sort, timeframe));
 }
 
 async function fetchWithTimeout(
@@ -63,20 +92,30 @@ async function fetchWithTimeout(
 }
 
 export async function fetchXFeed(params: {
-  handles: string[];
+  handles?: string[];
+  topics?: string[];
   sort: SortOption;
   timeframe: TimeframeOption;
   limit?: number;
   forceRefresh?: boolean;
   signal?: AbortSignal;
 }): Promise<FeedResponse> {
-  const { handles, sort, timeframe, limit = 25, forceRefresh = false, signal } = params;
+  const {
+    handles = [],
+    topics = [],
+    sort,
+    timeframe,
+    limit = 25,
+    forceRefresh = false,
+    signal,
+  } = params;
   const cleanHandles = handles.map(sanitizeXHandle).filter(Boolean);
-  if (cleanHandles.length === 0) {
+  const cleanTopics = topics.map(sanitizeXTopic).filter(Boolean);
+  if (cleanHandles.length === 0 && cleanTopics.length === 0) {
     return { posts: [], after: null };
   }
 
-  const cacheKey = buildXFeedCacheKey(cleanHandles, sort, timeframe);
+  const cacheKey = buildXFeedCacheKey(cleanHandles, cleanTopics, sort, timeframe);
   if (forceRefresh) {
     cacheDelete(cacheKey);
   } else {
@@ -85,11 +124,12 @@ export async function fetchXFeed(params: {
   }
 
   const qs = new URLSearchParams({
-    handles: cleanHandles.join(','),
     sort,
     t: timeframe,
     limit: String(limit),
   });
+  if (cleanHandles.length > 0) qs.set('handles', cleanHandles.join(','));
+  if (cleanTopics.length > 0) qs.set('topics', cleanTopics.join(','));
   if (forceRefresh) qs.set('refresh', '1');
 
   const res = await fetchWithTimeout(`/api/x/feed?${qs.toString()}`, 14_000, signal);

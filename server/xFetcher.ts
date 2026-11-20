@@ -113,6 +113,16 @@ export function sanitizeXHandle(raw: string): string {
     .slice(0, 20);
 }
 
+export function sanitizeXTopic(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^#+/, '')
+    .replace(/[^\p{L}\p{N}\s_\-+.]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 48);
+}
+
 function decodeEntities(str: string): string {
   return str
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
@@ -357,7 +367,7 @@ async function fetchHandleFromNitter(
       const res = await fetchWithTimeout(
         url,
         {
-          'User-Agent': 'Mozilla/5.0 (compatible; Subfeed/1.0)',
+          'User-Agent': 'Mozilla/5.0 (compatible; minisocial/1.0)',
           Accept: 'application/rss+xml, application/xml, text/xml',
         },
         4500
@@ -371,6 +381,160 @@ async function fetchHandleFromNitter(
       }
     } catch {
       // Try next healthy Nitter host
+    }
+  }
+
+  return [];
+}
+
+function parseNitterHtmlSearch(html: string, topic: string): NormalizedXPost[] {
+  if (html.includes('anubis_challenge') || html.includes('Just a moment')) return [];
+  const blocks = html.split(/<div class="timeline-item/i).slice(1, 30);
+  const posts: NormalizedXPost[] = [];
+
+  for (const block of blocks) {
+    const linkMatch = block.match(/href="\/([a-zA-Z0-9_]+)\/status\/(\d{10,22})/i);
+    const bodyMatch = block.match(/class="tweet-content[^"]*"[^>]*>([\s\S]*?)<\/div>/i);
+    if (!linkMatch || !bodyMatch) continue;
+
+    const author = linkMatch[1];
+    const tweetId = linkMatch[2];
+    const fullBody = htmlToCleanText(bodyMatch[1]);
+    if (!fullBody) continue;
+
+    const nameMatch = block.match(/class="fullname"[^>]*title="([^"]+)"/i);
+    const dateMatch = block.match(/class="tweet-date"[^>]*><a[^>]*title="([^"]+)"/i);
+    const heartMatch = block.match(/icon-heart[^>]*><\/span>\s*([0-9,]+)/i);
+    const rtMatch = block.match(/icon-retweet[^>]*><\/span>\s*([0-9,]+)/i);
+    const commentMatch = block.match(/icon-comment[^>]*><\/span>\s*([0-9,]+)/i);
+
+    const parsedDate = dateMatch ? Date.parse(dateMatch[1].replace(' · ', ' ')) : NaN;
+    const createdUtc = Number.isFinite(parsedDate)
+      ? Math.floor(parsedDate / 1000)
+      : Math.floor(Date.now() / 1000);
+
+    const imgMatches = Array.from(block.matchAll(/<img[^>]+src="([^"]+)"/gi));
+    const images: string[] = [];
+    for (const m of imgMatches) {
+      const rewritten = rewriteNitterImageUrl(m[1]);
+      if (
+        rewritten &&
+        !rewritten.includes('profile_images') &&
+        !rewritten.includes('emoji') &&
+        !images.includes(rewritten)
+      ) {
+        images.push(rewritten);
+      }
+    }
+
+    const firstLine = fullBody.split('\n')[0].trim();
+    const headline =
+      firstLine.length > 180
+        ? `${firstLine.slice(0, 177).trimEnd()}...`
+        : firstLine || `Post by @${author}`;
+
+    posts.push({
+      id: `x_${tweetId}`,
+      fullname: `x_${tweetId}`,
+      source: 'x',
+      title: headline,
+      subreddit: author,
+      author,
+      authorName: nameMatch ? decodeEntities(nameMatch[1]) : author,
+      score: heartMatch ? Number(heartMatch[1].replace(/,/g, '')) || 0 : 0,
+      upvoteRatio: null,
+      numComments: commentMatch ? Number(commentMatch[1].replace(/,/g, '')) || 0 : 0,
+      reposts: rtMatch ? Number(rtMatch[1].replace(/,/g, '')) || 0 : 0,
+      views: 0,
+      createdUtc,
+      permalink: `/${author}/status/${tweetId}`,
+      url: `https://x.com/${author}/status/${tweetId}`,
+      domain: 'x.com',
+      isSelf: true,
+      selftext: fullBody !== headline ? fullBody : '',
+      flair: `#${topic}`,
+      thumbnail: images[0] || null,
+      previewImage: images[0] || null,
+      galleryImages: images,
+      isVideo: block.includes('video-container') || block.includes('video_thumb'),
+      videoUrl: null,
+      over18: false,
+      spoiler: false,
+      stickied: false,
+      isRetweet: false,
+      retweetedBy: null,
+      quotedPost: null,
+    });
+  }
+
+  return posts;
+}
+
+async function fetchTopicFromNitter(
+  topic: string,
+  forceRefresh = false
+): Promise<NormalizedXPost[]> {
+  const cleanTopic = sanitizeXTopic(topic);
+  if (!cleanTopic) return [];
+
+  const key = `x:topic:${cleanTopic.toLowerCase()}`;
+  if (!forceRefresh) {
+    const cached = cacheGet<NormalizedXPost[]>(key);
+    if (cached) return cached;
+  }
+
+  const queryStr = cleanTopic.includes(' ') ? `"${cleanTopic}"` : cleanTopic;
+  const hosts = await getHealthyNitterHosts();
+
+  // 1. Try Nitter Search RSS across healthy hosts
+  for (const host of hosts) {
+    try {
+      const url = `${host}/search/rss?f=tweets&q=${encodeURIComponent(queryStr)}`;
+      const res = await fetchWithTimeout(
+        url,
+        {
+          'User-Agent': 'Mozilla/5.0 (compatible; minisocial/1.0)',
+          Accept: 'application/rss+xml, application/xml, text/xml',
+        },
+        4500
+      );
+      if (!res.ok) continue;
+      const xml = await res.text();
+      const parsed = parseNitterRss(xml, cleanTopic).map((post) => ({
+        ...post,
+        subreddit: post.author,
+        flair: post.flair || `#${cleanTopic}`,
+      }));
+      if (parsed.length > 0) {
+        cacheSet(key, parsed, 3 * 60 * 1000);
+        return parsed;
+      }
+    } catch {
+      // Try next healthy Nitter host
+    }
+  }
+
+  // 2. Fallback to Nitter HTML search if search RSS was disabled on available hosts
+  for (const host of hosts.slice(0, 3)) {
+    try {
+      const url = `${host}/search?f=tweets&q=${encodeURIComponent(queryStr)}`;
+      const res = await fetchWithTimeout(
+        url,
+        {
+          'User-Agent': 'Mozilla/5.0 (compatible; minisocial/1.0)',
+          Accept: 'text/html',
+        },
+        4500
+      );
+      if (!res.ok) continue;
+      const html = await res.text();
+      const parsed = parseNitterHtmlSearch(html, cleanTopic);
+      if (parsed.length > 0) {
+        cacheSet(key, parsed, 3 * 60 * 1000);
+        return parsed;
+      }
+    } catch {
+      // Try next host
     }
   }
 
@@ -507,22 +671,36 @@ function rankXPosts(posts: NormalizedXPost[], sort: string): NormalizedXPost[] {
 }
 
 export async function fetchXFeed(params: {
-  handles: string[];
+  handles?: string[];
+  topics?: string[];
   sort: string;
   timeframe: string;
   limit?: number;
   forceRefresh?: boolean;
 }): Promise<{ posts: NormalizedXPost[]; after: string | null; source: string }> {
-  const { handles, sort, timeframe, limit = 25, forceRefresh = false } = params;
+  const {
+    handles = [],
+    topics = [],
+    sort,
+    timeframe,
+    limit = 25,
+    forceRefresh = false,
+  } = params;
   const cleanHandles = Array.from(
     new Set(handles.map((h) => sanitizeXHandle(h).toLowerCase()).filter(Boolean))
   ).slice(0, 12);
+  const cleanTopics = Array.from(
+    new Set(topics.map((t) => sanitizeXTopic(t)).filter(Boolean))
+  ).slice(0, 12);
 
-  if (cleanHandles.length === 0) {
+  if (cleanHandles.length === 0 && cleanTopics.length === 0) {
     return { posts: [], after: null, source: 'nitter' };
   }
 
-  const feedKey = `x:feed:${cleanHandles.sort().join(',')}:${sort}:${timeframe}:${limit}`;
+  const feedKey = `x:feed:${cleanHandles.sort().join(',')}|t:${cleanTopics
+    .map((t) => t.toLowerCase())
+    .sort()
+    .join(',')}:${sort}:${timeframe}:${limit}`;
   if (!forceRefresh) {
     const cached = cacheGet<{ posts: NormalizedXPost[]; after: string | null; source: string }>(
       feedKey
@@ -530,12 +708,13 @@ export async function fetchXFeed(params: {
     if (cached) return cached;
   }
 
-  const perHandleLists = await Promise.all(
-    cleanHandles.map((h) => fetchHandleFromNitter(h, forceRefresh))
-  );
+  const [perHandleLists, perTopicLists] = await Promise.all([
+    Promise.all(cleanHandles.map((h) => fetchHandleFromNitter(h, forceRefresh))),
+    Promise.all(cleanTopics.map((t) => fetchTopicFromNitter(t, forceRefresh))),
+  ]);
 
   const dedup = new Map<string, NormalizedXPost>();
-  for (const list of perHandleLists) {
+  for (const list of [...perHandleLists, ...perTopicLists]) {
     for (const post of list) {
       if (!dedup.has(post.id)) {
         dedup.set(post.id, post);

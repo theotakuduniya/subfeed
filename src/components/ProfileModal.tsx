@@ -17,6 +17,7 @@ interface ProfileModalProps {
   syncing: boolean;
   subredditCount: number;
   xAccountCount: number;
+  xTopicCount: number;
   savedCount: number;
   readCount: number;
   onSignInGoogle: () => Promise<void>;
@@ -55,6 +56,7 @@ export function ProfileModal({
   syncing,
   subredditCount,
   xAccountCount,
+  xTopicCount,
   savedCount,
   readCount,
   onSignInGoogle,
@@ -191,9 +193,9 @@ export function ProfileModal({
                   </div>
                 </div>
                 <div className="p-3 rounded-lg border border-[var(--sf-border)] bg-[var(--sf-surface)]">
-                  <div className="text-[11px] text-[var(--sf-text-muted)]">X Accounts</div>
+                  <div className="text-[11px] text-[var(--sf-text-muted)]">X Feeds</div>
                   <div className="mt-1 text-[16px] font-semibold tabular-nums text-[var(--sf-text)]">
-                    {xAccountCount}
+                    {xAccountCount + xTopicCount}
                   </div>
                 </div>
                 <div className="p-3 rounded-lg border border-[var(--sf-border)] bg-[var(--sf-surface)]">
@@ -288,7 +290,7 @@ export function ProfileModal({
               {/* Guest local read-history utility */}
               <div className="pt-3 border-t border-[var(--sf-border-subtle)] flex items-center justify-between gap-2 text-[11.5px] text-[var(--sf-text-muted)]">
                 <span>
-                  {subredditCount + xAccountCount} feeds · {savedCount} saved · {readCount} read locally
+                  {subredditCount + xAccountCount + xTopicCount} feeds · {savedCount} saved · {readCount} read locally
                 </span>
                 {readCount > 0 && (
                   <button

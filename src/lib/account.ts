@@ -35,6 +35,7 @@ export interface CloudAccountState {
   initialized: boolean;
   subreddits: string[];
   xAccounts: string[];
+  xTopics: string[];
   savedPosts: RedditPost[];
   readPostIds: string[];
   preferences: UserPreferencesPayload;
@@ -150,6 +151,7 @@ export async function logoutAccount(): Promise<void> {
 export async function bootstrapUserState(payload: {
   subreddits: string[];
   xAccounts: string[];
+  xTopics: string[];
   savedPosts: RedditPost[];
   readPostIds: string[];
   preferences: UserPreferencesPayload;
@@ -163,6 +165,7 @@ export async function bootstrapUserState(payload: {
 export async function syncUserFeedsToServer(payload: {
   subreddits: string[];
   xAccounts: string[];
+  xTopics: string[];
 }): Promise<void> {
   await apiFetch<{ ok: boolean }>('/api/user/feeds', {
     method: 'PUT',

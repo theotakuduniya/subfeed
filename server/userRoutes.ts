@@ -213,6 +213,7 @@ async function loadFullUserState(userId: string) {
     include: {
       subreddits: { orderBy: { position: 'asc' } },
       xAccounts: { orderBy: { position: 'asc' } },
+      xTopics: { orderBy: { position: 'asc' } },
       savedPosts: { orderBy: { savedAt: 'desc' }, take: 200 },
       readPosts: { orderBy: { readAt: 'desc' }, take: 250 },
     },
@@ -230,6 +231,7 @@ async function loadFullUserState(userId: string) {
     initialized: user.initialized,
     subreddits: user.subreddits.map((s) => s.name),
     xAccounts: user.xAccounts.map((x) => x.handle),
+    xTopics: user.xTopics.map((t) => t.topic),
     savedPosts: user.savedPosts.map((s) => s.payload),
     readPostIds: user.readPosts.map((r) => r.postId),
     preferences: {
@@ -510,6 +512,7 @@ export function registerUserRoutes(app: Express): void {
       const body = req.body || {};
       const localSubreddits = sanitizeStringArray(body.subreddits, 100);
       const localXAccounts = sanitizeStringArray(body.xAccounts, 100);
+      const localXTopics = sanitizeStringArray(body.xTopics, 100);
       const localReadIds = sanitizeIdArray(body.readPostIds, 250);
       const localSavedPosts = Array.isArray(body.savedPosts)
         ? body.savedPosts.slice(0, 100)
@@ -549,6 +552,17 @@ export function registerUserRoutes(app: Express): void {
               data: localXAccounts.map((handle, position) => ({
                 userId,
                 handle,
+                position,
+              })),
+              skipDuplicates: true,
+            });
+          }
+
+          if (localXTopics.length > 0) {
+            await tx.followedTopic.createMany({
+              data: localXTopics.map((topic, position) => ({
+                userId,
+                topic,
                 position,
               })),
               skipDuplicates: true,
@@ -605,6 +619,7 @@ export function registerUserRoutes(app: Express): void {
 
     const subreddits = sanitizeStringArray(req.body?.subreddits, 100);
     const xAccounts = sanitizeStringArray(req.body?.xAccounts, 100);
+    const xTopics = sanitizeStringArray(req.body?.xTopics, 100);
 
     try {
       await prisma.$transaction(async (tx) => {
@@ -620,6 +635,14 @@ export function registerUserRoutes(app: Express): void {
         if (xAccounts.length > 0) {
           await tx.followedXAccount.createMany({
             data: xAccounts.map((handle, position) => ({ userId, handle, position })),
+            skipDuplicates: true,
+          });
+        }
+
+        await tx.followedTopic.deleteMany({ where: { userId } });
+        if (xTopics.length > 0) {
+          await tx.followedTopic.createMany({
+            data: xTopics.map((topic, position) => ({ userId, topic, position })),
             skipDuplicates: true,
           });
         }

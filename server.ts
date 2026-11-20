@@ -7,6 +7,7 @@ import {
   fetchXProfile,
   fetchXTweetDetails,
   sanitizeXHandle,
+  sanitizeXTopic,
 } from './server/xFetcher.ts';
 import { registerUserRoutes } from './server/userRoutes.ts';
 
@@ -752,10 +753,11 @@ async function createServer() {
     return res.status(404).json({ error: `Subreddit r/${name} not found.` });
   });
 
-  // GET /api/x/feed?handles=vercel,github&sort=best&t=day&refresh=0
+  // GET /api/x/feed?handles=vercel,github&topics=AI,webdev&sort=best&t=day&refresh=0
   app.get('/api/x/feed', async (req, res) => {
     try {
       const rawHandles = String(req.query.handles || '').trim();
+      const rawTopics = String(req.query.topics || '').trim();
       const sort = String(req.query.sort || 'best').toLowerCase();
       const timeframe = String(req.query.t || 'day').toLowerCase();
       const limit = Math.min(50, Math.max(10, Number(req.query.limit) || 25));
@@ -766,12 +768,18 @@ async function createServer() {
         .map(sanitizeXHandle)
         .filter(Boolean);
 
-      if (handles.length === 0) {
-        return res.status(400).json({ error: 'At least one X handle is required.' });
+      const topics = rawTopics
+        .split(/[,|]+/)
+        .map(sanitizeXTopic)
+        .filter(Boolean);
+
+      if (handles.length === 0 && topics.length === 0) {
+        return res.status(400).json({ error: 'At least one X handle or topic is required.' });
       }
 
       const data = await fetchXFeed({
         handles,
+        topics,
         sort,
         timeframe,
         limit,
