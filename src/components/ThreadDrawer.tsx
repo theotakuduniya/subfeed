@@ -222,8 +222,8 @@ export function ThreadDrawer({
             className="relative z-10 w-full max-w-[940px] h-full bg-[var(--sf-sheet)] border-t border-x border-[var(--sf-border)] rounded-t-2xl flex flex-col shadow-2xl overflow-hidden glass:backdrop-blur-2xl glass:shadow-[0_-16px_60px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.16)]"
           >
             {/* Sticky Sheet Header */}
-            <div className="h-14 px-5 sm:px-7 border-b border-[var(--sf-border)] flex items-center justify-between gap-4 shrink-0">
-              <div className="flex items-center gap-2 text-[12.5px] text-[var(--sf-text-muted)] min-w-0">
+            <div className="h-14 px-3.5 sm:px-7 border-b border-[var(--sf-border)] flex items-center justify-between gap-2 sm:gap-4 shrink-0">
+              <div className="flex items-center gap-1.5 sm:gap-2 text-[12px] sm:text-[12.5px] text-[var(--sf-text-muted)] min-w-0">
                 {isX ? (
                   <>
                     <button
@@ -240,8 +240,8 @@ export function ThreadDrawer({
                       activePost.authorName.toLowerCase() !==
                         activePost.author.toLowerCase() && (
                         <>
-                          <span aria-hidden="true">·</span>
-                          <span className="truncate">{activePost.authorName}</span>
+                          <span aria-hidden="true" className="hidden sm:inline">·</span>
+                          <span className="hidden sm:inline truncate">{activePost.authorName}</span>
                         </>
                       )}
                   </>
@@ -257,8 +257,8 @@ export function ThreadDrawer({
                     >
                       r/{activePost.subreddit}
                     </button>
-                    <span aria-hidden="true">·</span>
-                    <span className="truncate">u/{activePost.author}</span>
+                    <span aria-hidden="true" className="hidden sm:inline">·</span>
+                    <span className="hidden sm:inline truncate">u/{activePost.author}</span>
                   </>
                 )}
                 <span aria-hidden="true">·</span>
@@ -267,35 +267,37 @@ export function ThreadDrawer({
                 </span>
               </div>
 
-              <div className="flex items-center gap-1.5 shrink-0">
+              <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
                 <button
                   type="button"
                   onClick={() => onToggleSave(activePost)}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[12px] rounded-md transition-colors whitespace-nowrap ${
+                  aria-label={isSaved ? 'Remove from saved' : 'Save post'}
+                  className={`inline-flex items-center gap-1.5 p-2 sm:px-2.5 sm:py-1.5 text-[12px] rounded-md transition-colors whitespace-nowrap ${
                     isSaved
                       ? 'text-[var(--sf-accent)] bg-[var(--sf-accent-soft)]'
                       : 'text-[var(--sf-text-secondary)] hover:text-[var(--sf-text)] hover:bg-[var(--sf-hover)]'
                   }`}
                 >
                   <Bookmark className={`w-3.5 h-3.5 ${isSaved ? 'fill-current' : ''}`} />
-                  <span>{isSaved ? 'Saved' : 'Save'}</span>
+                  <span className="hidden sm:inline">{isSaved ? 'Saved' : 'Save'}</span>
                 </button>
 
                 <a
                   href={externalPostUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[12px] text-[var(--sf-text-secondary)] hover:text-[var(--sf-text)] rounded-md hover:bg-[var(--sf-hover)] transition-colors whitespace-nowrap"
+                  aria-label={isX ? 'Open on X' : 'Open on Reddit'}
+                  className="inline-flex items-center gap-1.5 p-2 sm:px-2.5 sm:py-1.5 text-[12px] text-[var(--sf-text-secondary)] hover:text-[var(--sf-text)] rounded-md hover:bg-[var(--sf-hover)] transition-colors whitespace-nowrap"
                 >
-                  <span>{isX ? 'X' : 'Reddit'}</span>
-                  <ExternalLink className="w-3 h-3" />
+                  <span className="hidden sm:inline">{isX ? 'X' : 'Reddit'}</span>
+                  <ExternalLink className="w-3.5 h-3.5 sm:w-3 sm:h-3" />
                 </a>
 
                 <button
                   type="button"
                   onClick={onClose}
                   aria-label="Close thread"
-                  className="p-1.5 text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] rounded-md hover:bg-[var(--sf-hover)] transition-colors"
+                  className="p-2 sm:p-1.5 text-[var(--sf-text)] sm:text-[var(--sf-text-secondary)] hover:text-[var(--sf-text)] bg-[var(--sf-surface)] sm:bg-transparent border border-[var(--sf-border)] sm:border-transparent rounded-md hover:bg-[var(--sf-hover)] transition-colors shrink-0"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -305,7 +307,7 @@ export function ThreadDrawer({
             {/* Scrollable Thread Body */}
             <div
               ref={scrollContainerRef}
-              className="flex-1 overflow-y-auto px-5 sm:px-8 py-7"
+              className="flex-1 overflow-y-auto px-4 sm:px-8 py-6 sm:py-7"
             >
               <div className="max-w-[740px] mx-auto w-full">
                 {/* Post Title & Stats */}
@@ -463,13 +465,13 @@ export function ThreadDrawer({
 
           {/* Comments / Replies Section */}
           <section className="mt-6">
-            <div className="flex items-center justify-between gap-4 pb-3 border-b border-[var(--sf-border)]">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[var(--sf-border)]">
               <h2 className="text-[13px] font-medium text-[var(--sf-text)]">
                 {isX ? 'Replies' : 'Discussion'}
               </h2>
 
               {!isX && (
-                <div className="flex items-center gap-1" role="tablist" aria-label="Sort comments">
+                <div className="flex flex-wrap items-center gap-1" role="tablist" aria-label="Sort comments">
                   {COMMENT_SORTS.map((opt) => (
                     <button
                       key={opt.value}

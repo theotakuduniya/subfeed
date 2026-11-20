@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
-import { PanelLeft, Search, X } from 'lucide-react';
+import { onAuthStateChanged, type User } from 'firebase/auth';
+import { PanelLeft, Search, User as UserIcon, X } from 'lucide-react';
 import type {
   ActiveView,
   FeedDensity,
@@ -27,11 +28,25 @@ import {
   sanitizeXHandle,
 } from './lib/x';
 import { cacheClearAll } from './lib/cache';
+import {
+  auth,
+  clearAllSavedPostsFromCloud,
+  deleteSavedPostFromCloud,
+  ensureUserCloudProfile,
+  savePostToCloud,
+  signInWithGoogle,
+  signOutUser,
+  subscribeSavedPosts,
+  subscribeUserFeedState,
+  syncFeedsAndReadHistory,
+  syncUserPreferences,
+} from './lib/firebase';
 import { Sidebar } from './components/Sidebar';
 import { PostRow } from './components/PostRow';
 import { PostCard } from './components/PostCard';
 import { ThreadDrawer } from './components/ThreadDrawer';
 import { SettingsModal } from './components/SettingsModal';
+import { ProfileModal } from './components/ProfileModal';
 import { SubfeedIcon } from './components/SubfeedIcon';
 import { PullToRefreshIndicator } from './components/PullToRefreshIndicator';
 import { usePullToRefresh } from './hooks/usePullToRefresh';
@@ -40,6 +55,7 @@ const STORAGE_KEYS = {
   subreddits: 'subfeed:subreddits',
   xAccounts: 'subfeed:xAccounts',
   saved: 'subfeed:saved',
+  read: 'subfeed:read',
   theme: 'subfeed:theme',
   font: 'subfeed:font',
   density: 'subfeed:density',
@@ -99,6 +115,20 @@ function readStoredSavedPosts(): RedditPost[] {
   } catch {
     return [];
   }
+}
+
+function readStoredReadPostIds(): string[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.read);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((id): id is string => typeof id === 'string').slice(0, 250);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  return [];
 }
 
 function readStoredTheme(): ThemeOption {
@@ -176,15 +206,23 @@ export default function App() {
   const [subreddits, setSubreddits] = useState<string[]>(readStoredSubreddits);
   const [xAccounts, setXAccounts] = useState<string[]>(readStoredXAccounts);
   const [savedPosts, setSavedPosts] = useState<RedditPost[]>(readStoredSavedPosts);
+  const [readPostIds, setReadPostIds] = useState<string[]>(readStoredReadPostIds);
   const [theme, setTheme] = useState<ThemeOption>(readStoredTheme);
   const [font, setFont] = useState<FontOption>(readStoredFont);
   const [density, setDensity] = useState<FeedDensity>(readStoredDensity);
+
+  const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [cloudReady, setCloudReady] = useState(false);
+  const [cloudSyncing, setCloudSyncing] = useState(false);
+  const [headerAvatarFailed, setHeaderAvatarFailed] = useState(false);
 
   const [activeView, setActiveView] = useState<ActiveView>({ type: 'all' });
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>(readStoredSourceFilter);
   const [sort, setSort] = useState<SortOption>(readStoredSort);
   const [timeframe, setTimeframe] = useState<TimeframeOption>(readStoredTimeframe);
   const [filterQuery, setFilterQuery] = useState('');
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
 
   const [posts, setPosts] = useState<RedditPost[]>([]);
   const [afterCursor, setAfterCursor] = useState<string | null>(null);
@@ -199,6 +237,7 @@ export default function App() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [desktopSidebarOpen, setDesktopSidebarOpen] = useState<boolean>(readStoredSidebarOpen);
   const [showSettings, setShowSettings] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
 
   const addInputRef = useRef<HTMLInputElement | null>(null);
@@ -206,6 +245,131 @@ export default function App() {
   const feedScrollRef = useRef<HTMLElement | null>(null);
   const lastRefreshNonceRef = useRef<number>(0);
   const pendingPullRefreshRef = useRef<boolean>(false);
+  const hydratingCloudRef = useRef<boolean>(false);
+  const latestLocalRef = useRef({
+    subreddits,
+    xAccounts,
+    readPostIds,
+    savedPosts,
+    theme,
+    font,
+    density,
+    sort,
+    timeframe,
+    sourceFilter,
+  });
+
+  latestLocalRef.current = {
+    subreddits,
+    xAccounts,
+    readPostIds,
+    savedPosts,
+    theme,
+    font,
+    density,
+    sort,
+    timeframe,
+    sourceFilter,
+  };
+
+  // Listen to Firebase Authentication state
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser);
+      setHeaderAvatarFailed(false);
+      setAuthReady(true);
+      if (!firebaseUser) {
+        setCloudReady(false);
+        setCloudSyncing(false);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Hydrate & subscribe to Firestore cloud data when authenticated
+  useEffect(() => {
+    if (!authReady || !user) return;
+
+    let active = true;
+    let unsubUser: (() => void) | null = null;
+    let unsubSaved: (() => void) | null = null;
+
+    setCloudReady(false);
+    setCloudSyncing(true);
+
+    const snapshot = latestLocalRef.current;
+
+    ensureUserCloudProfile(
+      user,
+      {
+        subreddits: snapshot.subreddits,
+        xAccounts: snapshot.xAccounts,
+        readPostIds: snapshot.readPostIds,
+        theme: snapshot.theme,
+        font: snapshot.font,
+        density: snapshot.density,
+        sort: snapshot.sort,
+        timeframe: snapshot.timeframe,
+        sourceFilter: snapshot.sourceFilter,
+      },
+      snapshot.savedPosts
+    )
+      .then((initialCloud) => {
+        if (!active) return;
+
+        if (initialCloud) {
+          hydratingCloudRef.current = true;
+          setSubreddits(initialCloud.subreddits);
+          setXAccounts(initialCloud.xAccounts);
+          setReadPostIds(initialCloud.readPostIds);
+          setTheme(initialCloud.theme);
+          setFont(initialCloud.font);
+          setDensity(initialCloud.density);
+          setSort(initialCloud.sort);
+          setTimeframe(initialCloud.timeframe);
+          setSourceFilter(initialCloud.sourceFilter);
+          setTimeout(() => {
+            hydratingCloudRef.current = false;
+          }, 150);
+        }
+
+        unsubUser = subscribeUserFeedState(user.uid, (cloudState) => {
+          if (!active) return;
+          hydratingCloudRef.current = true;
+          setSubreddits(cloudState.subreddits);
+          setXAccounts(cloudState.xAccounts);
+          setReadPostIds(cloudState.readPostIds);
+          setTheme(cloudState.theme);
+          setFont(cloudState.font);
+          setDensity(cloudState.density);
+          setSort(cloudState.sort);
+          setTimeframe(cloudState.timeframe);
+          setSourceFilter(cloudState.sourceFilter);
+          setTimeout(() => {
+            hydratingCloudRef.current = false;
+          }, 150);
+        });
+
+        unsubSaved = subscribeSavedPosts(user.uid, (cloudSaved) => {
+          if (!active) return;
+          setSavedPosts(cloudSaved);
+        });
+
+        setCloudReady(true);
+      })
+      .catch((err) => {
+        console.error('Failed to initialize cloud profile:', err);
+      })
+      .finally(() => {
+        if (active) setCloudSyncing(false);
+      });
+
+    return () => {
+      active = false;
+      if (unsubUser) unsubUser();
+      if (unsubSaved) unsubSaved();
+    };
+  }, [authReady, user]);
 
   // Sync preferences to document root & localStorage
   useEffect(() => {
@@ -258,6 +422,14 @@ export default function App() {
 
   useEffect(() => {
     try {
+      localStorage.setItem(STORAGE_KEYS.read, JSON.stringify(readPostIds));
+    } catch {
+      // Ignore
+    }
+  }, [readPostIds]);
+
+  useEffect(() => {
+    try {
       localStorage.setItem(STORAGE_KEYS.density, density);
     } catch {
       // Ignore
@@ -296,7 +468,39 @@ export default function App() {
     }
   }, [sourceFilter]);
 
+  // Sync followed feeds & read history to Firestore when signed in
+  useEffect(() => {
+    if (!user || !cloudReady || hydratingCloudRef.current) return;
+    const timer = setTimeout(() => {
+      if (hydratingCloudRef.current) return;
+      void syncFeedsAndReadHistory(user.uid, {
+        subreddits,
+        xAccounts,
+        readPostIds,
+      }).catch((err) => console.error('Failed to sync feeds:', err));
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [user, cloudReady, subreddits, xAccounts, readPostIds]);
+
+  // Sync display & feed preferences to Firestore when signed in
+  useEffect(() => {
+    if (!user || !cloudReady || hydratingCloudRef.current) return;
+    const timer = setTimeout(() => {
+      if (hydratingCloudRef.current) return;
+      void syncUserPreferences(user.uid, {
+        theme,
+        font,
+        density,
+        sort,
+        timeframe,
+        sourceFilter,
+      }).catch((err) => console.error('Failed to sync preferences:', err));
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [user, cloudReady, theme, font, density, sort, timeframe, sourceFilter]);
+
   const savedIdSet = useMemo(() => new Set(savedPosts.map((p) => p.id)), [savedPosts]);
+  const readIdSet = useMemo(() => new Set(readPostIds), [readPostIds]);
 
   const activeSubreddits = useMemo(() => {
     if (activeView.type === 'subreddit') return [activeView.name];
@@ -463,6 +667,7 @@ export default function App() {
     (activeSubreddits.length === 0 && activeXHandles.length === 0) ||
     Boolean(selectedPost) ||
     showSettings ||
+    showProfile ||
     showShortcuts ||
     mobileSidebarOpen;
 
@@ -581,12 +786,58 @@ export default function App() {
     [activeView]
   );
 
-  const handleToggleSave = useCallback((post: RedditPost) => {
-    setSavedPosts((prev) => {
-      const exists = prev.some((p) => p.id === post.id);
-      if (exists) return prev.filter((p) => p.id !== post.id);
-      return [post, ...prev];
+  const handleMarkPostRead = useCallback((postId: string) => {
+    setReadPostIds((prev) => {
+      if (prev[0] === postId) return prev;
+      const filtered = prev.filter((id) => id !== postId);
+      return [postId, ...filtered].slice(0, 250);
     });
+  }, []);
+
+  const handleOpenPost = useCallback(
+    (post: RedditPost, idx?: number) => {
+      if (typeof idx === 'number') setFocusedIndex(idx);
+      setSelectedPost(post);
+      handleMarkPostRead(post.id);
+    },
+    [handleMarkPostRead]
+  );
+
+  const handleToggleSave = useCallback(
+    (post: RedditPost) => {
+      const exists = savedIdSet.has(post.id);
+      setSavedPosts((prev) => {
+        if (exists) return prev.filter((p) => p.id !== post.id);
+        return [post, ...prev.filter((p) => p.id !== post.id)];
+      });
+
+      if (user && cloudReady) {
+        if (exists) {
+          void deleteSavedPostFromCloud(user.uid, post.id).catch((err) =>
+            console.error('Failed to remove saved post from cloud:', err)
+          );
+        } else {
+          void savePostToCloud(user.uid, post).catch((err) =>
+            console.error('Failed to save post to cloud:', err)
+          );
+        }
+      }
+    },
+    [savedIdSet, user, cloudReady]
+  );
+
+  const handleClearSaved = useCallback(() => {
+    const current = savedPosts;
+    setSavedPosts([]);
+    if (user && cloudReady && current.length > 0) {
+      void clearAllSavedPostsFromCloud(user.uid, current).catch((err) =>
+        console.error('Failed to clear saved posts in cloud:', err)
+      );
+    }
+  }, [savedPosts, user, cloudReady]);
+
+  const handleClearReadHistory = useCallback(() => {
+    setReadPostIds([]);
   }, []);
 
   const handleSelectSubredditFromPost = useCallback((name: string) => {
@@ -618,6 +869,10 @@ export default function App() {
           target.isContentEditable);
 
       if (e.key === 'Escape') {
+        if (showProfile) {
+          setShowProfile(false);
+          return;
+        }
         if (showSettings) {
           setShowSettings(false);
           return;
@@ -634,6 +889,11 @@ export default function App() {
           setMobileSidebarOpen(false);
           return;
         }
+        if (mobileSearchOpen) {
+          setMobileSearchOpen(false);
+          setFilterQuery('');
+          return;
+        }
       }
 
       if (isTyping) return;
@@ -641,10 +901,12 @@ export default function App() {
       if (e.key === '?') {
         e.preventDefault();
         setShowSettings(false);
+        setShowProfile(false);
         setShowShortcuts((s) => !s);
       } else if (e.key === ',') {
         e.preventDefault();
         setShowShortcuts(false);
+        setShowProfile(false);
         setShowSettings((s) => !s);
       } else if (e.key === 'b') {
         e.preventDefault();
@@ -655,7 +917,12 @@ export default function App() {
         }
       } else if (e.key === '/') {
         e.preventDefault();
-        filterInputRef.current?.focus();
+        if (window.innerWidth < 640) {
+          setMobileSearchOpen(true);
+          setTimeout(() => filterInputRef.current?.focus(), 0);
+        } else {
+          filterInputRef.current?.focus();
+        }
       } else if (e.key === 'a') {
         e.preventDefault();
         if (window.innerWidth >= 1024 && !desktopSidebarOpen) {
@@ -667,20 +934,25 @@ export default function App() {
       } else if (e.key === 'r') {
         e.preventDefault();
         setRefreshNonce((n) => n + 1);
-      } else if (e.key === 'j' && !selectedPost && !showSettings) {
+      } else if (e.key === 'j' && !selectedPost && !showSettings && !showProfile) {
         e.preventDefault();
         setFocusedIndex((prev) =>
           visiblePosts.length === 0 ? -1 : Math.min(visiblePosts.length - 1, prev + 1)
         );
-      } else if (e.key === 'k' && !selectedPost && !showSettings) {
+      } else if (e.key === 'k' && !selectedPost && !showSettings && !showProfile) {
         e.preventDefault();
         setFocusedIndex((prev) =>
           visiblePosts.length === 0 ? -1 : Math.max(0, prev - 1)
         );
-      } else if ((e.key === 'Enter' || e.key === 'o') && !selectedPost && !showSettings) {
+      } else if (
+        (e.key === 'Enter' || e.key === 'o') &&
+        !selectedPost &&
+        !showSettings &&
+        !showProfile
+      ) {
         if (focusedIndex >= 0 && visiblePosts[focusedIndex]) {
           e.preventDefault();
-          setSelectedPost(visiblePosts[focusedIndex]);
+          handleOpenPost(visiblePosts[focusedIndex], focusedIndex);
         }
       }
     };
@@ -690,8 +962,11 @@ export default function App() {
   }, [
     desktopSidebarOpen,
     focusedIndex,
+    handleOpenPost,
+    mobileSearchOpen,
     mobileSidebarOpen,
     selectedPost,
+    showProfile,
     showSettings,
     showShortcuts,
     visiblePosts,
@@ -707,9 +982,13 @@ export default function App() {
           : `r/${activeView.name}`;
 
   const totalFollowed = subreddits.length + xAccounts.length;
+  const userInitial = (user?.displayName || user?.email || 'M')
+    .trim()
+    .slice(0, 1)
+    .toUpperCase();
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden flex bg-[var(--sf-bg)] glass:bg-transparent text-[var(--sf-text)]">
+    <div className="relative h-[100dvh] w-screen overflow-hidden flex bg-[var(--sf-bg)] glass:bg-transparent text-[var(--sf-text)]">
       {/* Ambient layered mesh backdrop for Glassmorphism */}
       {theme === 'glass' && <div className="sf-glass-backdrop" aria-hidden="true" />}
 
@@ -720,17 +999,20 @@ export default function App() {
           xAccounts={xAccounts}
           activeView={activeView}
           savedCount={savedPosts.length}
+          user={user}
           isOpenMobile={mobileSidebarOpen}
           isDesktopOpen={desktopSidebarOpen}
           addInputRef={addInputRef}
           onSelectView={(v) => {
             setActiveView(v);
             setFilterQuery('');
+            setMobileSearchOpen(false);
           }}
           onAddSubreddit={handleAddSubreddit}
           onRemoveSubreddit={handleRemoveSubreddit}
           onAddXAccount={handleAddXAccount}
           onRemoveXAccount={handleRemoveXAccount}
+          onOpenProfile={() => setShowProfile(true)}
           onOpenSettings={() => setShowSettings(true)}
           onOpenShortcuts={() => setShowShortcuts(true)}
           onCloseMobile={() => setMobileSidebarOpen(false)}
@@ -738,60 +1020,145 @@ export default function App() {
 
         {/* Main Workspace */}
         <div className="flex-1 min-w-0 flex flex-col h-full">
-          {/* Ultra-Minimal Header: Feed Heading + Search Only */}
-          <header className="h-14 px-4 sm:px-6 border-b border-[var(--sf-border)] flex items-center justify-between gap-4 shrink-0 bg-[var(--sf-header)] glass:backdrop-blur-2xl">
-            {/* Left: Sidebar Toggle + Brand Icon (when collapsed) + Active Feed Heading */}
-            <div className="flex items-center gap-3 min-w-0 shrink-0">
-              <button
-                type="button"
-                onClick={() => {
-                  if (window.innerWidth >= 1024) {
-                    setDesktopSidebarOpen((prev) => !prev);
-                  } else {
-                    setMobileSidebarOpen((prev) => !prev);
-                  }
-                }}
-                aria-label="Toggle sidebar"
-                title="Toggle sidebar (b)"
-                className="p-1.5 -ml-1.5 text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] hover:bg-[var(--sf-hover)] rounded-md transition-colors shrink-0"
-              >
-                <PanelLeft className="w-4 h-4" />
-              </button>
-
-              <SubfeedIcon
-                className={`w-[18px] h-[18px] shrink-0 ${
-                  desktopSidebarOpen ? 'lg:hidden' : ''
-                }`}
-              />
-
-              <h1 className="text-[14px] font-semibold tracking-tight text-[var(--sf-text)] whitespace-nowrap truncate max-w-[160px] sm:max-w-[280px]">
-                {headerTitle}
-              </h1>
-            </div>
-
-            {/* Right: Search Only */}
-            <div className="relative flex items-center w-44 sm:w-64">
-              <Search className="w-3.5 h-3.5 text-[var(--sf-text-muted)] absolute left-2.5 pointer-events-none" />
-              <input
-                ref={filterInputRef}
-                type="text"
-                value={filterQuery}
-                onChange={(e) => setFilterQuery(e.target.value)}
-                placeholder="Search..."
-                aria-label="Search posts"
-                className="w-full pl-8 pr-7 py-1.5 text-[12px] bg-[var(--sf-surface)] border border-[var(--sf-border)] focus:border-[var(--sf-border-strong)] rounded-md text-[var(--sf-text)] placeholder:text-[var(--sf-text-muted)]/75 focus:outline-none transition-colors glass:backdrop-blur-md"
-              />
-              {filterQuery && (
+          {/* Responsive Header: Feed Heading + Search + Profile */}
+          <header className="h-14 px-3.5 sm:px-6 border-b border-[var(--sf-border)] flex items-center justify-between gap-2.5 sm:gap-4 shrink-0 bg-[var(--sf-header)] glass:backdrop-blur-2xl">
+            {mobileSearchOpen ? (
+              <div className="flex sm:hidden items-center gap-2 w-full">
+                <div className="relative flex-1 flex items-center">
+                  <Search className="w-3.5 h-3.5 text-[var(--sf-text-muted)] absolute left-2.5 pointer-events-none" />
+                  <input
+                    ref={filterInputRef}
+                    type="text"
+                    value={filterQuery}
+                    onChange={(e) => setFilterQuery(e.target.value)}
+                    placeholder="Search posts..."
+                    aria-label="Search posts"
+                    autoFocus
+                    className="w-full pl-8 pr-8 py-1.5 text-[13px] bg-[var(--sf-surface)] border border-[var(--sf-border-strong)] rounded-md text-[var(--sf-text)] placeholder:text-[var(--sf-text-muted)]/75 focus:outline-none transition-colors glass:backdrop-blur-md"
+                  />
+                  {filterQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setFilterQuery('')}
+                      aria-label="Clear search"
+                      className="absolute right-2 p-0.5 text-[var(--sf-text-secondary)] hover:text-[var(--sf-text)]"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
                 <button
                   type="button"
-                  onClick={() => setFilterQuery('')}
-                  aria-label="Clear search"
-                  className="absolute right-2 text-[var(--sf-text-muted)] hover:text-[var(--sf-text)]"
+                  onClick={() => {
+                    setMobileSearchOpen(false);
+                    setFilterQuery('');
+                  }}
+                  aria-label="Close search"
+                  className="p-2 text-[var(--sf-text)] bg-[var(--sf-surface)] border border-[var(--sf-border)] rounded-md shrink-0"
                 >
-                  <X className="w-3 h-3" />
+                  <X className="w-4 h-4" />
                 </button>
-              )}
-            </div>
+              </div>
+            ) : (
+              <>
+                {/* Left: Sidebar Toggle + Brand Icon (when collapsed) + Active Feed Heading */}
+                <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1 sm:flex-initial">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.innerWidth >= 1024) {
+                        setDesktopSidebarOpen((prev) => !prev);
+                      } else {
+                        setMobileSidebarOpen((prev) => !prev);
+                      }
+                    }}
+                    aria-label="Toggle sidebar"
+                    title="Toggle sidebar (b)"
+                    className="p-1.5 -ml-1 text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] hover:bg-[var(--sf-hover)] rounded-md transition-colors shrink-0"
+                  >
+                    <PanelLeft className="w-4 h-4" />
+                  </button>
+
+                  <SubfeedIcon
+                    className={`w-[18px] h-[18px] shrink-0 ${
+                      desktopSidebarOpen ? 'lg:hidden' : ''
+                    }`}
+                  />
+
+                  <h1 className="text-[14px] font-semibold tracking-tight text-[var(--sf-text)] whitespace-nowrap truncate">
+                    {headerTitle}
+                  </h1>
+                </div>
+
+                {/* Right: Search + Profile Trigger */}
+                <div className="flex items-center gap-2 shrink-0">
+                  {/* Mobile Search Toggle */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileSearchOpen(true);
+                      setTimeout(() => filterInputRef.current?.focus(), 0);
+                    }}
+                    aria-label="Search posts"
+                    className="sm:hidden p-2 text-[var(--sf-text-secondary)] hover:text-[var(--sf-text)] hover:bg-[var(--sf-hover)] rounded-md transition-colors"
+                  >
+                    <Search className="w-4 h-4" />
+                  </button>
+
+                  {/* Desktop Inline Search */}
+                  <div className="hidden sm:flex relative items-center w-52 md:w-64">
+                    <Search className="w-3.5 h-3.5 text-[var(--sf-text-muted)] absolute left-2.5 pointer-events-none" />
+                    <input
+                      ref={filterInputRef}
+                      type="text"
+                      value={filterQuery}
+                      onChange={(e) => setFilterQuery(e.target.value)}
+                      placeholder="Search..."
+                      aria-label="Search posts"
+                      className="w-full pl-8 pr-7 py-1.5 text-[12px] bg-[var(--sf-surface)] border border-[var(--sf-border)] focus:border-[var(--sf-border-strong)] rounded-md text-[var(--sf-text)] placeholder:text-[var(--sf-text-muted)]/75 focus:outline-none transition-colors glass:backdrop-blur-md"
+                    />
+                    {filterQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setFilterQuery('')}
+                        aria-label="Clear search"
+                        className="absolute right-2 text-[var(--sf-text-secondary)] hover:text-[var(--sf-text)]"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Profile Button */}
+                  <button
+                    type="button"
+                    onClick={() => setShowProfile(true)}
+                    aria-label={user ? 'Open profile' : 'Sign in with Google'}
+                    title={user ? user.displayName || user.email || 'Profile' : 'Sign in with Google'}
+                    className="inline-flex items-center gap-2 p-1 sm:px-2 sm:py-1 rounded-md border border-[var(--sf-border)] bg-[var(--sf-surface)] hover:border-[var(--sf-border-strong)] hover:bg-[var(--sf-hover)] transition-colors shrink-0 glass:backdrop-blur-md"
+                  >
+                    {user?.photoURL && !headerAvatarFailed ? (
+                      <img
+                        src={user.photoURL}
+                        alt={user.displayName || 'Profile'}
+                        referrerPolicy="no-referrer"
+                        onError={() => setHeaderAvatarFailed(true)}
+                        className="w-5 h-5 rounded-full object-cover shrink-0"
+                      />
+                    ) : user ? (
+                      <span className="w-5 h-5 rounded-full bg-[var(--sf-active)] flex items-center justify-center text-[10.5px] font-semibold text-[var(--sf-text)] shrink-0">
+                        {userInitial}
+                      </span>
+                    ) : (
+                      <UserIcon className="w-4 h-4 text-[var(--sf-text-secondary)] shrink-0" />
+                    )}
+                    <span className="hidden md:inline text-[12px] font-medium text-[var(--sf-text-secondary)] max-w-[96px] truncate">
+                      {user ? user.displayName?.split(' ')[0] || 'Profile' : 'Sign in'}
+                    </span>
+                  </button>
+                </div>
+              </>
+            )}
           </header>
 
         {/* Scrollable Feed Viewport */}
@@ -952,7 +1319,7 @@ export default function App() {
               /* Populated Editorial Ledger or Card Stream */
               <>
                 {density === 'card' ? (
-                  <div className="max-w-[740px] mx-auto px-4 sm:px-6 py-5 space-y-4">
+                  <div className="max-w-[740px] mx-auto px-3.5 sm:px-6 py-4 sm:py-5 space-y-3.5 sm:space-y-4">
                     {visiblePosts.map((post, idx) => (
                       <PostCard
                         key={post.id}
@@ -961,10 +1328,8 @@ export default function App() {
                         isSelected={selectedPost?.id === post.id}
                         isFocused={focusedIndex === idx}
                         isSaved={savedIdSet.has(post.id)}
-                        onOpen={(p) => {
-                          setFocusedIndex(idx);
-                          setSelectedPost(p);
-                        }}
+                        isRead={readIdSet.has(post.id)}
+                        onOpen={(p) => handleOpenPost(p, idx)}
                         onSelectSubreddit={handleSelectSubredditFromPost}
                         onSelectXAccount={handleSelectXAccountFromPost}
                         onToggleSave={handleToggleSave}
@@ -982,10 +1347,8 @@ export default function App() {
                         isSelected={selectedPost?.id === post.id}
                         isFocused={focusedIndex === idx}
                         isSaved={savedIdSet.has(post.id)}
-                        onOpen={(p) => {
-                          setFocusedIndex(idx);
-                          setSelectedPost(p);
-                        }}
+                        isRead={readIdSet.has(post.id)}
+                        onOpen={(p) => handleOpenPost(p, idx)}
                         onSelectSubreddit={handleSelectSubredditFromPost}
                         onSelectXAccount={handleSelectXAccountFromPost}
                         onToggleSave={handleToggleSave}
@@ -1049,8 +1412,28 @@ export default function App() {
           cacheClearAll();
           setRefreshNonce((n) => n + 1);
         }}
-        onClearSaved={() => setSavedPosts([])}
+        onClearSaved={handleClearSaved}
         onClose={() => setShowSettings(false)}
+      />
+
+      {/* Profile & Google Auth Modal */}
+      <ProfileModal
+        isOpen={showProfile}
+        user={user}
+        authLoading={!authReady}
+        syncing={cloudSyncing}
+        subredditCount={subreddits.length}
+        xAccountCount={xAccounts.length}
+        savedCount={savedPosts.length}
+        readCount={readPostIds.length}
+        onSignInGoogle={async () => {
+          await signInWithGoogle();
+        }}
+        onSignOut={async () => {
+          await signOutUser();
+        }}
+        onClearReadHistory={handleClearReadHistory}
+        onClose={() => setShowProfile(false)}
       />
 
       {/* Keyboard Shortcuts Modal */}

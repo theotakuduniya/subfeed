@@ -1,0 +1,251 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // === Global Hardened Primitives ===
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isVerifiedOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isStringList(arr, maxLen) {
+      return arr is list
+        && arr.size() <= maxLen
+        && (arr.size() == 0 || arr[0] is string);
+    }
+
+    // === Validation Blueprint: UserFeedState ===
+    function isValidUserFeedState(data, userId) {
+      return data.keys().hasAll([
+          'uid',
+          'displayName',
+          'email',
+          'photoURL',
+          'subreddits',
+          'xAccounts',
+          'readPostIds',
+          'theme',
+          'font',
+          'density',
+          'sort',
+          'timeframe',
+          'sourceFilter',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'displayName',
+          'email',
+          'photoURL',
+          'subreddits',
+          'xAccounts',
+          'readPostIds',
+          'theme',
+          'font',
+          'density',
+          'sort',
+          'timeframe',
+          'sourceFilter',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.uid is string && data.uid == request.auth.uid && data.uid == userId
+        && data.displayName is string && data.displayName.size() <= 120
+        && data.email is string && data.email.size() <= 254
+        && data.photoURL is string && data.photoURL.size() <= 512
+        && isStringList(data.subreddits, 100)
+        && isStringList(data.xAccounts, 100)
+        && isStringList(data.readPostIds, 250)
+        && data.theme is string && data.theme in ['dark', 'light', 'mocha', 'glass']
+        && data.font is string && data.font in ['geist-mono', 'geist', 'inter', 'jakarta', 'space-grotesk', 'jetbrains-mono']
+        && data.density is string && data.density in ['comfortable', 'compact', 'card']
+        && data.sort is string && data.sort in ['best', 'hot', 'new', 'top', 'rising', 'controversial']
+        && data.timeframe is string && data.timeframe in ['hour', 'day', 'week', 'month', 'year', 'all']
+        && data.sourceFilter is string && data.sourceFilter in ['all', 'reddit', 'x']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // === Validation Blueprint: SavedPost ===
+    function isValidSavedPost(data, userId, postId) {
+      return data.keys().hasAll([
+          'ownerId',
+          'id',
+          'fullname',
+          'source',
+          'title',
+          'subreddit',
+          'author',
+          'score',
+          'numComments',
+          'createdUtc',
+          'permalink',
+          'url',
+          'domain',
+          'isSelf',
+          'selftext',
+          'galleryImages',
+          'isVideo',
+          'over18',
+          'spoiler',
+          'stickied',
+          'savedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'id',
+          'fullname',
+          'source',
+          'title',
+          'subreddit',
+          'author',
+          'authorName',
+          'score',
+          'upvoteRatio',
+          'numComments',
+          'reposts',
+          'views',
+          'createdUtc',
+          'permalink',
+          'url',
+          'domain',
+          'isSelf',
+          'selftext',
+          'flair',
+          'thumbnail',
+          'previewImage',
+          'galleryImages',
+          'isVideo',
+          'videoUrl',
+          'over18',
+          'spoiler',
+          'stickied',
+          'savedAt'
+        ])
+        && data.ownerId is string && data.ownerId == request.auth.uid && data.ownerId == userId
+        && data.id is string && data.id == postId && isValidId(data.id)
+        && data.fullname is string && data.fullname.size() <= 128
+        && data.source is string && data.source in ['reddit', 'x']
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 600
+        && data.subreddit is string && data.subreddit.size() <= 120
+        && data.author is string && data.author.size() <= 120
+        && (!('authorName' in data) || (data.authorName is string && data.authorName.size() <= 160))
+        && data.score is number
+        && (!('upvoteRatio' in data) || data.upvoteRatio == null || data.upvoteRatio is number)
+        && data.numComments is number
+        && (!('reposts' in data) || data.reposts is number)
+        && (!('views' in data) || data.views is number)
+        && data.createdUtc is number
+        && data.permalink is string && data.permalink.size() <= 500
+        && data.url is string && data.url.size() <= 1000
+        && data.domain is string && data.domain.size() <= 200
+        && data.isSelf is bool
+        && data.selftext is string && data.selftext.size() <= 8000
+        && (!('flair' in data) || data.flair == null || (data.flair is string && data.flair.size() <= 160))
+        && (!('thumbnail' in data) || data.thumbnail == null || (data.thumbnail is string && data.thumbnail.size() <= 1000))
+        && (!('previewImage' in data) || data.previewImage == null || (data.previewImage is string && data.previewImage.size() <= 1000))
+        && isStringList(data.galleryImages, 20)
+        && data.isVideo is bool
+        && (!('videoUrl' in data) || data.videoUrl == null || (data.videoUrl is string && data.videoUrl.size() <= 1000))
+        && data.over18 is bool
+        && data.spoiler is bool
+        && data.stickied is bool
+        && data.savedAt is timestamp;
+    }
+
+    // === Collection: /users/{userId} ===
+    match /users/{userId} {
+      // Strictly owner-only read for PII isolation; never allow listing /users
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+
+      allow create: if isVerifiedOwner(userId)
+        && isValidId(userId)
+        && isValidUserFeedState(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedOwner(userId)
+        && isValidId(userId)
+        && isValidUserFeedState(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Update followed feeds & read history
+          incoming().diff(existing()).affectedKeys().hasOnly(['subreddits', 'xAccounts', 'readPostIds', 'updatedAt']) ||
+          // Action: Update UI preferences
+          incoming().diff(existing()).affectedKeys().hasOnly(['theme', 'font', 'density', 'sort', 'timeframe', 'sourceFilter', 'updatedAt']) ||
+          // Action: Sync profile metadata & full feed state
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoURL', 'subreddits', 'xAccounts', 'readPostIds', 'theme', 'font', 'density', 'sort', 'timeframe', 'sourceFilter', 'updatedAt'])
+        );
+
+      allow delete: if isVerifiedOwner(userId) && isValidId(userId);
+
+      // === Subcollection: /users/{userId}/savedPosts/{postId} ===
+      match /savedPosts/{postId} {
+        allow get: if isValidId(userId)
+          && isValidId(postId)
+          && isOwner(userId)
+          && resource.data.ownerId == request.auth.uid;
+
+        // Secure list query without get()/exists() lookups
+        allow list: if isOwner(userId)
+          && resource.data.ownerId == request.auth.uid;
+
+        // Master Gate: parent user document must exist
+        allow create: if isVerifiedOwner(userId)
+          && isValidId(userId)
+          && isValidId(postId)
+          && isValidSavedPost(incoming(), userId, postId)
+          && incoming().savedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId));
+
+        allow update: if isVerifiedOwner(userId)
+          && isValidId(userId)
+          && isValidId(postId)
+          && isValidSavedPost(incoming(), userId, postId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().id == existing().id
+          && incoming().savedAt == existing().savedAt
+          && incoming().diff(existing()).affectedKeys().hasOnly(['score', 'numComments', 'reposts', 'views', 'selftext', 'title'])
+          && exists(/databases/$(database)/documents/users/$(userId));
+
+        allow delete: if isVerifiedOwner(userId)
+          && isValidId(userId)
+          && isValidId(postId)
+          && existing().ownerId == request.auth.uid;
+      }
+    }
+  }
+}

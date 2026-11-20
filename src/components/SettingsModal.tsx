@@ -139,7 +139,7 @@ function SettingDropdownRow<T extends string>({
   const SelectedIcon = selected.Icon;
 
   return (
-    <div className="py-3 flex items-center justify-between gap-4">
+    <div className="py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4">
       <div className="min-w-0">
         <div className="text-[12.5px] font-medium text-[var(--sf-text)]">
           {label}
@@ -153,7 +153,7 @@ function SettingDropdownRow<T extends string>({
 
       <div
         data-settings-dropdown={id}
-        className="relative shrink-0 w-[186px] sm:w-[206px]"
+        className="relative shrink-0 w-full sm:w-[206px]"
       >
         <button
           type="button"
@@ -333,7 +333,7 @@ export function SettingsModal({
       />
 
       {/* Modal Surface */}
-      <div className="relative z-10 w-full max-w-[460px] flex flex-col bg-[var(--sf-modal)] border border-[var(--sf-border)] rounded-xl shadow-2xl glass:backdrop-blur-2xl glass:shadow-[0_24px_80px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.16)]">
+      <div className="relative z-10 w-full max-w-[460px] max-h-[90dvh] flex flex-col bg-[var(--sf-modal)] border border-[var(--sf-border)] rounded-xl shadow-2xl glass:backdrop-blur-2xl glass:shadow-[0_24px_80px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.16)]">
         {/* Header */}
         <div className="px-5 py-4 border-b border-[var(--sf-border)] flex items-center justify-between gap-4 shrink-0">
           <h2 className="text-[14px] font-semibold text-[var(--sf-text)]">
@@ -343,14 +343,14 @@ export function SettingsModal({
             type="button"
             onClick={onClose}
             aria-label="Close settings"
-            className="p-1 text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] rounded transition-colors"
+            className="p-1.5 -mr-1 text-[var(--sf-text-secondary)] hover:text-[var(--sf-text)] hover:bg-[var(--sf-hover)] rounded-md transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Compact Dropdown Rows */}
-        <div className="px-5 py-1.5 divide-y divide-[var(--sf-border-subtle)]">
+        <div className="px-5 py-1.5 divide-y divide-[var(--sf-border-subtle)] overflow-y-auto">
           <SettingDropdownRow
             id="theme"
             label="Appearance"

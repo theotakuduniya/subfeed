@@ -1,0 +1,258 @@
+{
+  "entities": {
+    "UserFeedState": {
+      "title": "UserFeedState",
+      "description": "Owner-private profile, followed subreddits, followed X accounts, read post IDs, and UI preferences.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User display name from Google profile.",
+          "maxLength": 120
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Owner email address (PII, strictly owner-only).",
+          "maxLength": 254
+        },
+        "photoURL": {
+          "type": "string",
+          "format": "uri",
+          "description": "Optional Google profile avatar URL.",
+          "maxLength": 512
+        },
+        "subreddits": {
+          "type": "array",
+          "description": "Followed subreddit names (bounded to 100 entries)."
+        },
+        "xAccounts": {
+          "type": "array",
+          "description": "Followed X account handles (bounded to 100 entries)."
+        },
+        "readPostIds": {
+          "type": "array",
+          "description": "Recently read post IDs for dimmed after-effect (bounded to 250 entries)."
+        },
+        "theme": {
+          "type": "string",
+          "enum": ["dark", "light", "mocha", "glass"],
+          "description": "Selected theme palette."
+        },
+        "font": {
+          "type": "string",
+          "enum": ["geist-mono", "geist", "inter", "jakarta", "space-grotesk", "jetbrains-mono"],
+          "description": "Selected UI font."
+        },
+        "density": {
+          "type": "string",
+          "enum": ["comfortable", "compact", "card"],
+          "description": "Feed layout density."
+        },
+        "sort": {
+          "type": "string",
+          "enum": ["best", "hot", "new", "top", "rising", "controversial"],
+          "description": "Default feed sort."
+        },
+        "timeframe": {
+          "type": "string",
+          "enum": ["hour", "day", "week", "month", "year", "all"],
+          "description": "Default feed timeframe."
+        },
+        "sourceFilter": {
+          "type": "string",
+          "enum": ["all", "reddit", "x"],
+          "description": "Combined view source filter."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-updated timestamp."
+        }
+      },
+      "required": [
+        "uid",
+        "displayName",
+        "email",
+        "photoURL",
+        "subreddits",
+        "xAccounts",
+        "readPostIds",
+        "theme",
+        "font",
+        "density",
+        "sort",
+        "timeframe",
+        "sourceFilter",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SavedPost": {
+      "title": "SavedPost",
+      "description": "A bookmarked Reddit or X post owned by a specific user.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "id": {
+          "type": "string",
+          "description": "Post identifier matching document ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fullname": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "source": {
+          "type": "string",
+          "enum": ["reddit", "x"]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "subreddit": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "author": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "authorName": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "score": {
+          "type": "number"
+        },
+        "numComments": {
+          "type": "number"
+        },
+        "reposts": {
+          "type": "number"
+        },
+        "views": {
+          "type": "number"
+        },
+        "createdUtc": {
+          "type": "number"
+        },
+        "permalink": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "domain": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "isSelf": {
+          "type": "boolean"
+        },
+        "selftext": {
+          "type": "string",
+          "maxLength": 8000
+        },
+        "flair": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "thumbnail": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "previewImage": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "galleryImages": {
+          "type": "array",
+          "description": "Bounded gallery image URLs (max 20)."
+        },
+        "isVideo": {
+          "type": "boolean"
+        },
+        "videoUrl": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "over18": {
+          "type": "boolean"
+        },
+        "spoiler": {
+          "type": "boolean"
+        },
+        "stickied": {
+          "type": "boolean"
+        },
+        "savedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when bookmarked."
+        }
+      },
+      "required": [
+        "ownerId",
+        "id",
+        "fullname",
+        "source",
+        "title",
+        "subreddit",
+        "author",
+        "score",
+        "numComments",
+        "createdUtc",
+        "permalink",
+        "url",
+        "domain",
+        "isSelf",
+        "selftext",
+        "galleryImages",
+        "isVideo",
+        "over18",
+        "spoiler",
+        "stickied",
+        "savedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserFeedState"
+      },
+      "description": "Owner-private user profile, followed subreddits/X accounts, read post IDs, and display preferences."
+    },
+    "/users/{userId}/savedPosts/{postId}": {
+      "schema": {
+        "$ref": "#/entities/SavedPost"
+      },
+      "description": "Subcollection of bookmarked Reddit and X posts belonging to a user."
+    }
+  }
+}

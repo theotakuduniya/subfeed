@@ -18,6 +18,7 @@ interface PostCardProps {
   isSelected: boolean;
   isFocused: boolean;
   isSaved: boolean;
+  isRead: boolean;
   onOpen: (post: RedditPost) => void;
   onSelectSubreddit: (name: string) => void;
   onSelectXAccount: (handle: string) => void;
@@ -30,6 +31,7 @@ export function PostCard({
   isSelected,
   isFocused,
   isSaved,
+  isRead,
   onOpen,
   onSelectSubreddit,
   onSelectXAccount,
@@ -54,6 +56,7 @@ export function PostCard({
 
   const isExternalLink = !isX && !post.isSelf && !post.domain.startsWith('self.');
   const galleryCount = post.galleryImages.length;
+  const mutedRead = isRead && !isSelected;
 
   return (
     <motion.article
@@ -61,15 +64,17 @@ export function PostCard({
       whileHover={shouldReduceMotion ? undefined : { y: -2, scale: 1.008 }}
       whileTap={shouldReduceMotion ? undefined : { scale: 0.996 }}
       transition={{ type: 'spring', stiffness: 460, damping: 32, mass: 0.6 }}
-      className={`group rounded-lg border transition-[background-color,border-color,box-shadow] duration-150 cursor-pointer overflow-hidden will-change-transform hover:shadow-[0_10px_28px_-14px_rgba(0,0,0,0.22)] dark:hover:shadow-[0_12px_32px_-12px_rgba(0,0,0,0.65)] glass:backdrop-blur-xl glass:shadow-[inset_0_1px_0_rgba(255,255,255,0.12)] glass:hover:shadow-[0_14px_34px_-12px_rgba(0,0,0,0.7),inset_0_1px_0_rgba(255,255,255,0.2)] ${
+      className={`group rounded-lg border transition-[background-color,border-color,box-shadow,opacity,filter] duration-200 cursor-pointer overflow-hidden will-change-transform hover:shadow-[0_10px_28px_-14px_rgba(0,0,0,0.22)] dark:hover:shadow-[0_12px_32px_-12px_rgba(0,0,0,0.65)] glass:backdrop-blur-xl glass:shadow-[inset_0_1px_0_rgba(255,255,255,0.12)] glass:hover:shadow-[0_14px_34px_-12px_rgba(0,0,0,0.7),inset_0_1px_0_rgba(255,255,255,0.2)] ${
         isSelected
           ? 'bg-[var(--sf-active)] border-[var(--sf-border-strong)]'
           : isFocused
             ? 'bg-[var(--sf-surface)] border-[var(--sf-border-strong)]'
-            : 'bg-[var(--sf-surface)] border-[var(--sf-border)] hover:border-[var(--sf-border-strong)] glass:hover:bg-white/[0.085]'
+            : mutedRead
+              ? 'bg-[var(--sf-surface-muted)]/70 border-[var(--sf-border-subtle)] opacity-65 hover:opacity-90 saturate-[0.3] hover:saturate-[0.75] hover:border-[var(--sf-border)]'
+              : 'bg-[var(--sf-surface)] border-[var(--sf-border)] hover:border-[var(--sf-border-strong)] glass:hover:bg-white/[0.085]'
       }`}
     >
-      <div className="p-5">
+      <div className="p-4 sm:p-5">
         {/* Top Metadata Line (Zero-Pill) */}
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11.5px] text-[var(--sf-text-muted)]">
           {isX ? (
@@ -150,10 +155,20 @@ export function PostCard({
               )}
             </>
           )}
+          {isRead && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="text-[var(--sf-text-muted)]">Read</span>
+            </>
+          )}
         </div>
 
         {/* Title */}
-        <h2 className="mt-2.5 text-[15.5px] font-semibold leading-snug text-[var(--sf-text)] transition-colors [text-wrap:balance] break-words">
+        <h2
+          className={`mt-2.5 text-[15.5px] font-semibold leading-snug transition-colors [text-wrap:balance] break-words ${
+            mutedRead ? 'text-[var(--sf-text-muted)]' : 'text-[var(--sf-text)]'
+          }`}
+        >
           {post.title}
         </h2>
 
@@ -190,7 +205,11 @@ export function PostCard({
               referrerPolicy="no-referrer"
               loading="lazy"
               onError={() => setImageFailed(true)}
-              className="w-full max-h-[420px] object-contain mx-auto"
+              className={`w-full max-h-[420px] object-contain mx-auto transition-[filter,opacity] duration-200 ${
+                mutedRead
+                  ? 'grayscale-[80%] opacity-80 group-hover:grayscale-[30%] group-hover:opacity-100'
+                  : ''
+              }`}
             />
             {(post.isVideo || galleryCount > 1) && (
               <div className="absolute bottom-2.5 right-2.5 px-2 py-1 text-[11px] font-medium bg-black/75 text-zinc-100 rounded tabular-nums flex items-center gap-1.5">
@@ -212,9 +231,11 @@ export function PostCard({
           <div className="flex items-center gap-4 tabular-nums min-w-0">
             <span
               className={`inline-flex items-center gap-1 font-medium ${
-                post.score >= 500
-                  ? 'text-[var(--sf-accent)]'
-                  : 'text-[var(--sf-text-secondary)]'
+                mutedRead
+                  ? 'text-[var(--sf-text-muted)]'
+                  : post.score >= 500
+                    ? 'text-[var(--sf-accent)]'
+                    : 'text-[var(--sf-text-secondary)]'
               }`}
             >
               {isX ? (

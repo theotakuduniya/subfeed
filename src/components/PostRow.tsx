@@ -11,6 +11,7 @@ interface PostRowProps {
   isSelected: boolean;
   isFocused: boolean;
   isSaved: boolean;
+  isRead: boolean;
   onOpen: (post: RedditPost) => void;
   onSelectSubreddit: (name: string) => void;
   onSelectXAccount: (handle: string) => void;
@@ -24,6 +25,7 @@ export function PostRow({
   isSelected,
   isFocused,
   isSaved,
+  isRead,
   onOpen,
   onSelectSubreddit,
   onSelectXAccount,
@@ -44,6 +46,7 @@ export function PostRow({
       : '';
 
   const isExternalLink = !isX && !post.isSelf && !post.domain.startsWith('self.');
+  const mutedRead = isRead && !isSelected;
 
   return (
     <motion.article
@@ -51,23 +54,27 @@ export function PostRow({
       whileHover={shouldReduceMotion ? undefined : { y: -1, scale: 1.004 }}
       whileTap={shouldReduceMotion ? undefined : { scale: 0.998 }}
       transition={{ type: 'spring', stiffness: 520, damping: 36, mass: 0.55 }}
-      className={`group relative flex items-start gap-4 px-5 sm:px-6 cursor-pointer transition-[background-color,box-shadow] duration-150 will-change-transform hover:z-10 hover:shadow-[0_4px_16px_-10px_rgba(0,0,0,0.18)] dark:hover:shadow-[0_6px_18px_-10px_rgba(0,0,0,0.55)] ${
+      className={`group relative flex items-start gap-3 sm:gap-4 px-3.5 sm:px-6 cursor-pointer transition-[background-color,box-shadow,opacity,filter] duration-200 will-change-transform hover:z-10 hover:shadow-[0_4px_16px_-10px_rgba(0,0,0,0.18)] dark:hover:shadow-[0_6px_18px_-10px_rgba(0,0,0,0.55)] ${
         density === 'compact' ? 'py-3' : 'py-4'
       } ${
         isSelected
           ? 'bg-[var(--sf-active)]'
           : isFocused
             ? 'bg-[var(--sf-hover)]'
-            : 'hover:bg-[var(--sf-hover)]'
+            : mutedRead
+              ? 'bg-[var(--sf-surface-muted)]/40 opacity-65 hover:opacity-90 saturate-[0.3] hover:saturate-[0.75] hover:bg-[var(--sf-hover)]'
+              : 'hover:bg-[var(--sf-hover)]'
       }`}
     >
       {/* Score / Likes Column */}
-      <div className="w-12 sm:w-14 pt-0.5 shrink-0 flex flex-col items-end text-right tabular-nums select-none">
+      <div className="w-10 sm:w-14 pt-0.5 shrink-0 flex flex-col items-end text-right tabular-nums select-none">
         <span
-          className={`inline-flex items-center gap-1 text-[12.5px] font-medium ${
-            post.score >= 500
-              ? 'text-[var(--sf-accent)]'
-              : 'text-[var(--sf-text-secondary)]'
+          className={`inline-flex items-center gap-1 text-[12px] sm:text-[12.5px] font-medium ${
+            mutedRead
+              ? 'text-[var(--sf-text-muted)]'
+              : post.score >= 500
+                ? 'text-[var(--sf-accent)]'
+                : 'text-[var(--sf-text-secondary)]'
           }`}
         >
           {isX ? (
@@ -85,7 +92,9 @@ export function PostRow({
           <h2
             className={`${
               density === 'compact' ? 'text-[13.5px]' : 'text-[14.5px]'
-            } font-medium leading-snug text-[var(--sf-text)] transition-colors break-words`}
+            } font-medium leading-snug transition-colors break-words ${
+              mutedRead ? 'text-[var(--sf-text-muted)]' : 'text-[var(--sf-text)]'
+            }`}
           >
             {post.title}
           </h2>
@@ -214,11 +223,17 @@ export function PostRow({
               )}
             </>
           )}
+          {isRead && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="text-[var(--sf-text-muted)]">Read</span>
+            </>
+          )}
         </div>
       </div>
 
       {/* Right Thumbnail & Subtle Actions */}
-      <div className="shrink-0 flex items-center gap-3 self-center">
+      <div className="shrink-0 flex items-center gap-2 sm:gap-3 self-center">
         {showThumb && (
           <div className="hidden sm:block w-[68px] h-[50px] rounded overflow-hidden bg-[var(--sf-surface-muted)] border border-[var(--sf-border)] shrink-0">
             <img
@@ -227,12 +242,16 @@ export function PostRow({
               referrerPolicy="no-referrer"
               loading="lazy"
               onError={() => setThumbFailed(true)}
-              className="w-full h-full object-cover"
+              className={`w-full h-full object-cover transition-[filter,opacity] duration-200 ${
+                mutedRead
+                  ? 'grayscale-[85%] opacity-75 group-hover:grayscale-[25%] group-hover:opacity-100'
+                  : ''
+              }`}
             />
           </div>
         )}
 
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5 sm:gap-1">
           <button
             type="button"
             onClick={(e) => {
@@ -241,10 +260,10 @@ export function PostRow({
             }}
             aria-label={isSaved ? 'Remove from saved' : 'Save post'}
             title={isSaved ? 'Remove from saved' : 'Save post'}
-            className={`p-1.5 rounded transition-colors ${
+            className={`p-1.5 rounded transition-opacity transition-colors ${
               isSaved
                 ? 'text-[var(--sf-accent)] opacity-100'
-                : 'text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
+                : 'text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] opacity-80 lg:opacity-0 lg:group-hover:opacity-100 focus-visible:opacity-100'
             }`}
           >
             <Bookmark className={`w-3.5 h-3.5 ${isSaved ? 'fill-current' : ''}`} />
@@ -258,7 +277,7 @@ export function PostRow({
               onClick={(e) => e.stopPropagation()}
               aria-label={isX ? 'Open post on X' : `Open external link (${post.domain})`}
               title={isX ? 'Open on X' : `Open ${post.domain}`}
-              className="p-1.5 rounded text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-colors"
+              className="p-1.5 rounded text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] opacity-80 lg:opacity-0 lg:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity transition-colors"
             >
               <ArrowUpRight className="w-3.5 h-3.5" />
             </a>

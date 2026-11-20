@@ -1,9 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
+import type { User } from 'firebase/auth';
 import {
   Bookmark,
+  ChevronDown,
   Layers,
   Plus,
   Settings,
+  User as UserIcon,
   X,
   Keyboard,
 } from 'lucide-react';
@@ -25,6 +29,7 @@ interface SidebarProps {
   xAccounts: string[];
   activeView: ActiveView;
   savedCount: number;
+  user: User | null;
   isOpenMobile: boolean;
   isDesktopOpen: boolean;
   addInputRef: React.RefObject<HTMLInputElement | null>;
@@ -33,6 +38,7 @@ interface SidebarProps {
   onRemoveSubreddit: (name: string) => void;
   onAddXAccount: (handle: string) => void;
   onRemoveXAccount: (handle: string) => void;
+  onOpenProfile: () => void;
   onOpenSettings: () => void;
   onOpenShortcuts: () => void;
   onCloseMobile: () => void;
@@ -43,6 +49,7 @@ export function Sidebar({
   xAccounts,
   activeView,
   savedCount,
+  user,
   isOpenMobile,
   isDesktopOpen,
   addInputRef,
@@ -51,6 +58,7 @@ export function Sidebar({
   onRemoveSubreddit,
   onAddXAccount,
   onRemoveXAccount,
+  onOpenProfile,
   onOpenSettings,
   onOpenShortcuts,
   onCloseMobile,
@@ -63,7 +71,14 @@ export function Sidebar({
   const [showDropdown, setShowDropdown] = useState(false);
   const [highlightedIdx, setHighlightedIdx] = useState(-1);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [subredditsOpen, setSubredditsOpen] = useState(true);
+  const [xAccountsOpen, setXAccountsOpen] = useState(true);
+  const [avatarFailed, setAvatarFailed] = useState(false);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setAvatarFailed(false);
+  }, [user?.photoURL]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -172,6 +187,7 @@ export function Sidebar({
       return;
     }
     onAddSubreddit(clean);
+    setSubredditsOpen(true);
     setInputValue('');
     setSuggestions([]);
     setShowDropdown(false);
@@ -196,6 +212,7 @@ export function Sidebar({
       return;
     }
     onAddXAccount(clean);
+    setXAccountsOpen(true);
     setInputValue('');
     setXPreview(null);
     setShowDropdown(false);
@@ -240,11 +257,15 @@ export function Sidebar({
   const totalSources = subreddits.length + xAccounts.length;
   const cleanXQuery = sanitizeXHandle(inputValue);
   const cleanRedditQuery = sanitizeSubredditName(inputValue);
+  const userInitial = (user?.displayName || user?.email || 'M')
+    .trim()
+    .slice(0, 1)
+    .toUpperCase();
 
   const content = (
-    <aside className="flex flex-col h-full w-[264px] shrink-0 bg-[var(--sf-sidebar)] border-r border-[var(--sf-border)] select-none glass:backdrop-blur-2xl">
+    <aside className="flex flex-col h-full w-[min(86vw,286px)] lg:w-[264px] shrink-0 bg-[var(--sf-sidebar)] border-r border-[var(--sf-border)] select-none glass:backdrop-blur-2xl">
       {/* Brand Header */}
-      <div className="h-14 px-5 flex items-center justify-between border-b border-[var(--sf-border)] shrink-0">
+      <div className="h-14 px-4 sm:px-5 flex items-center justify-between border-b border-[var(--sf-border)] shrink-0">
         <button
           type="button"
           onClick={() => {
@@ -254,14 +275,14 @@ export function Sidebar({
           className="inline-flex items-center gap-2.5 text-[15px] font-semibold tracking-tight text-[var(--sf-text)] hover:text-[var(--sf-accent)] transition-colors whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-[var(--sf-accent)] rounded-sm"
         >
           <SubfeedIcon className="w-[18px] h-[18px] shrink-0" />
-          <span>subfeed</span>
+          <span>minisocial</span>
         </button>
 
         <button
           type="button"
           onClick={onCloseMobile}
           aria-label="Close sidebar"
-          className="lg:hidden p-1.5 text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] rounded transition-colors"
+          className="lg:hidden p-1.5 text-[var(--sf-text)] bg-[var(--sf-surface)] border border-[var(--sf-border)] hover:bg-[var(--sf-hover)] rounded-md transition-colors shrink-0"
         >
           <X className="w-4 h-4" />
         </button>
@@ -479,143 +500,228 @@ export function Sidebar({
         </form>
       </div>
 
-      {/* Scrollable Lists: Subreddits + X Accounts */}
-      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-5">
-        {/* Subreddits Section */}
+      {/* Scrollable Accordions: Subreddits + X Accounts */}
+      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
+        {/* Subreddits Accordion */}
         <section>
-          <div className="px-3 pb-1.5 flex items-center justify-between">
-            <span className="text-[11.5px] font-medium text-[var(--sf-text-muted)]">
-              Subreddits
+          <button
+            type="button"
+            onClick={() => setSubredditsOpen((prev) => !prev)}
+            aria-expanded={subredditsOpen}
+            className="w-full px-3 py-1.5 flex items-center justify-between rounded-md text-[11.5px] font-medium text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] hover:bg-[var(--sf-hover)] transition-colors"
+          >
+            <span className="flex items-center gap-1.5">
+              <ChevronDown
+                className={`w-3.5 h-3.5 transition-transform duration-150 ${
+                  subredditsOpen ? 'rotate-0' : '-rotate-90'
+                }`}
+              />
+              <span>Subreddits</span>
             </span>
             <span className="text-[11px] tabular-nums text-[var(--sf-text-muted)]/75">
               {subreddits.length}
             </span>
-          </div>
+          </button>
 
-          {subreddits.length === 0 ? (
-            <p className="px-3 py-2 text-[11.5px] leading-relaxed text-[var(--sf-text-muted)]">
-              No subreddits yet.
-            </p>
-          ) : (
-            <ul className="space-y-0.5">
-              {subreddits.map((sub) => {
-                const isActive =
-                  activeView.type === 'subreddit' &&
-                  activeView.name.toLowerCase() === sub.toLowerCase();
+          <AnimatePresence initial={false}>
+            {subredditsOpen && (
+              <motion.div
+                key="subreddits-accordion"
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                className="overflow-hidden"
+              >
+                {subreddits.length === 0 ? (
+                  <p className="px-3 py-2 text-[11.5px] leading-relaxed text-[var(--sf-text-muted)]">
+                    No subreddits yet.
+                  </p>
+                ) : (
+                  <ul className="mt-1 space-y-0.5">
+                    {subreddits.map((sub) => {
+                      const isActive =
+                        activeView.type === 'subreddit' &&
+                        activeView.name.toLowerCase() === sub.toLowerCase();
 
-                return (
-                  <li key={sub} className="group relative flex items-center">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onSelectView({ type: 'subreddit', name: sub });
-                        onCloseMobile();
-                      }}
-                      className={`w-full text-left pl-3 pr-8 py-1.5 text-[13px] rounded-md transition-colors truncate ${
-                        isActive
-                          ? 'bg-[var(--sf-active)] text-[var(--sf-text)] font-medium glass:shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]'
-                          : 'text-[var(--sf-text-secondary)] hover:text-[var(--sf-text)] hover:bg-[var(--sf-hover)]'
-                      }`}
-                    >
-                      <span
-                        className={
-                          isActive
-                            ? 'text-[var(--sf-accent)]'
-                            : 'text-[var(--sf-text-muted)]/75'
-                        }
-                      >
-                        r/
-                      </span>
-                      {sub}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onRemoveSubreddit(sub);
-                      }}
-                      aria-label={`Remove r/${sub}`}
-                      title={`Remove r/${sub}`}
-                      className="absolute right-1.5 p-1 text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity rounded"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
+                      return (
+                        <li key={sub} className="group relative flex items-center">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onSelectView({ type: 'subreddit', name: sub });
+                              onCloseMobile();
+                            }}
+                            className={`w-full text-left pl-3 pr-9 py-1.5 text-[13px] rounded-md transition-colors truncate ${
+                              isActive
+                                ? 'bg-[var(--sf-active)] text-[var(--sf-text)] font-medium glass:shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]'
+                                : 'text-[var(--sf-text-secondary)] hover:text-[var(--sf-text)] hover:bg-[var(--sf-hover)]'
+                            }`}
+                          >
+                            <span
+                              className={
+                                isActive
+                                  ? 'text-[var(--sf-accent)]'
+                                  : 'text-[var(--sf-text-muted)]/75'
+                              }
+                            >
+                              r/
+                            </span>
+                            {sub}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onRemoveSubreddit(sub);
+                            }}
+                            aria-label={`Remove r/${sub}`}
+                            title={`Remove r/${sub}`}
+                            className="absolute right-1.5 p-1 text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] opacity-100 lg:opacity-0 lg:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity rounded"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </section>
 
-        {/* X Accounts Section */}
+        {/* X Accounts Accordion */}
         <section>
-          <div className="px-3 pb-1.5 flex items-center justify-between">
-            <span className="text-[11.5px] font-medium text-[var(--sf-text-muted)]">
-              X Accounts
+          <button
+            type="button"
+            onClick={() => setXAccountsOpen((prev) => !prev)}
+            aria-expanded={xAccountsOpen}
+            className="w-full px-3 py-1.5 flex items-center justify-between rounded-md text-[11.5px] font-medium text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] hover:bg-[var(--sf-hover)] transition-colors"
+          >
+            <span className="flex items-center gap-1.5">
+              <ChevronDown
+                className={`w-3.5 h-3.5 transition-transform duration-150 ${
+                  xAccountsOpen ? 'rotate-0' : '-rotate-90'
+                }`}
+              />
+              <span>X Accounts</span>
             </span>
             <span className="text-[11px] tabular-nums text-[var(--sf-text-muted)]/75">
               {xAccounts.length}
             </span>
-          </div>
+          </button>
 
-          {xAccounts.length === 0 ? (
-            <p className="px-3 py-2 text-[11.5px] leading-relaxed text-[var(--sf-text-muted)]">
-              Type @handle above to follow X accounts.
-            </p>
-          ) : (
-            <ul className="space-y-0.5">
-              {xAccounts.map((handle) => {
-                const isActive =
-                  activeView.type === 'x' &&
-                  activeView.handle.toLowerCase() === handle.toLowerCase();
+          <AnimatePresence initial={false}>
+            {xAccountsOpen && (
+              <motion.div
+                key="x-accounts-accordion"
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                className="overflow-hidden"
+              >
+                {xAccounts.length === 0 ? (
+                  <p className="px-3 py-2 text-[11.5px] leading-relaxed text-[var(--sf-text-muted)]">
+                    Type @handle above to follow X accounts.
+                  </p>
+                ) : (
+                  <ul className="mt-1 space-y-0.5">
+                    {xAccounts.map((handle) => {
+                      const isActive =
+                        activeView.type === 'x' &&
+                        activeView.handle.toLowerCase() === handle.toLowerCase();
 
-                return (
-                  <li key={handle} className="group relative flex items-center">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onSelectView({ type: 'x', handle });
-                        onCloseMobile();
-                      }}
-                      className={`w-full text-left pl-3 pr-8 py-1.5 text-[13px] rounded-md transition-colors truncate ${
-                        isActive
-                          ? 'bg-[var(--sf-active)] text-[var(--sf-text)] font-medium glass:shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]'
-                          : 'text-[var(--sf-text-secondary)] hover:text-[var(--sf-text)] hover:bg-[var(--sf-hover)]'
-                      }`}
-                    >
-                      <span
-                        className={
-                          isActive
-                            ? 'text-[var(--sf-accent)]'
-                            : 'text-[var(--sf-text-muted)]/75'
-                        }
-                      >
-                        @
-                      </span>
-                      {handle}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onRemoveXAccount(handle);
-                      }}
-                      aria-label={`Remove @${handle}`}
-                      title={`Remove @${handle}`}
-                      className="absolute right-1.5 p-1 text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity rounded"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
+                      return (
+                        <li key={handle} className="group relative flex items-center">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onSelectView({ type: 'x', handle });
+                              onCloseMobile();
+                            }}
+                            className={`w-full text-left pl-3 pr-9 py-1.5 text-[13px] rounded-md transition-colors truncate ${
+                              isActive
+                                ? 'bg-[var(--sf-active)] text-[var(--sf-text)] font-medium glass:shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]'
+                                : 'text-[var(--sf-text-secondary)] hover:text-[var(--sf-text)] hover:bg-[var(--sf-hover)]'
+                            }`}
+                          >
+                            <span
+                              className={
+                                isActive
+                                  ? 'text-[var(--sf-accent)]'
+                                  : 'text-[var(--sf-text-muted)]/75'
+                              }
+                            >
+                              @
+                            </span>
+                            {handle}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onRemoveXAccount(handle);
+                            }}
+                            aria-label={`Remove @${handle}`}
+                            title={`Remove @${handle}`}
+                            className="absolute right-1.5 p-1 text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] opacity-100 lg:opacity-0 lg:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity rounded"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </section>
       </div>
 
+      {/* Profile Account Row */}
+      <div className="px-3 py-2.5 border-t border-[var(--sf-border)] shrink-0">
+        <button
+          type="button"
+          onClick={() => {
+            onOpenProfile();
+            onCloseMobile();
+          }}
+          className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-left hover:bg-[var(--sf-hover)] transition-colors"
+          aria-label={user ? 'Open profile' : 'Sign in with Google'}
+        >
+          {user?.photoURL && !avatarFailed ? (
+            <img
+              src={user.photoURL}
+              alt={user.displayName || 'Profile'}
+              referrerPolicy="no-referrer"
+              onError={() => setAvatarFailed(true)}
+              className="w-6 h-6 rounded-full object-cover border border-[var(--sf-border)] shrink-0"
+            />
+          ) : user ? (
+            <span className="w-6 h-6 rounded-full bg-[var(--sf-active)] border border-[var(--sf-border)] flex items-center justify-center text-[11px] font-semibold text-[var(--sf-text)] shrink-0">
+              {userInitial}
+            </span>
+          ) : (
+            <span className="w-6 h-6 rounded-full bg-[var(--sf-surface)] border border-[var(--sf-border)] flex items-center justify-center text-[var(--sf-text-muted)] shrink-0">
+              <UserIcon className="w-3.5 h-3.5" />
+            </span>
+          )}
+          <span className="min-w-0 flex-1">
+            <span className="block text-[12.5px] font-medium text-[var(--sf-text)] truncate">
+              {user ? user.displayName || user.email || 'Account' : 'Profile'}
+            </span>
+            <span className="block text-[10.5px] text-[var(--sf-text-muted)] truncate">
+              {user ? 'Synced with Google' : 'Sign in with Google'}
+            </span>
+          </span>
+        </button>
+      </div>
+
       {/* Quiet Footer Utilities */}
-      <div className="px-4 py-3 border-t border-[var(--sf-border)] flex items-center justify-between gap-2 shrink-0">
+      <div className="px-4 py-2.5 border-t border-[var(--sf-border)] flex items-center justify-between gap-2 shrink-0">
         <button
           type="button"
           onClick={() => {
