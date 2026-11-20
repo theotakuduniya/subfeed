@@ -59,6 +59,34 @@ export interface XProfileInfo {
   verified: boolean;
 }
 
+export type NitterInstanceStatus = 'healthy' | 'degraded' | 'down' | 'unknown';
+
+export interface NitterInstanceHealth {
+  url: string;
+  host: string;
+  status: NitterInstanceStatus;
+  latencyMs: number | null;
+  rssOk: boolean;
+  searchOk: boolean;
+  lastCheckedAt: number | null;
+  lastError: string | null;
+  consecutiveFailures: number;
+  successCount: number;
+  failureCount: number;
+  isActive: boolean;
+}
+
+export class NitterConnectionError extends Error {
+  code = 'NITTER_UNAVAILABLE' as const;
+  failedInstance: string | null;
+
+  constructor(message: string, failedInstance: string | null = null) {
+    super(message);
+    this.name = 'NitterConnectionError';
+    this.failedInstance = failedInstance;
+  }
+}
+
 interface CacheEntry<T> {
   expiresAt: number;
   data: T;
@@ -84,10 +112,110 @@ function cacheSet<T>(key: string, data: T, ttlMs: number): void {
   xCache.set(key, { data, expiresAt: Date.now() + ttlMs });
 }
 
+export function clearXFeedCache(): void {
+  for (const key of Array.from(xCache.keys())) {
+    if (key.startsWith('x:feed:') || key.startsWith('x:topic:') || key.startsWith('x:handle:') || key.startsWith('x:tweet:')) {
+      xCache.delete(key);
+    }
+  }
+}
+
 const DEFAULT_NITTER_HOSTS = [
+  'https://nitter.kareem.one',
+  'https://nitter.mizuki.st',
   'https://nitter.netbub.com',
   'https://nitter.mie.foundation',
 ];
+
+// Hosts verified at runtime to support advanced search operators (min_faves, e-replies)
+const verifiedSearchHosts = new Set<string>(['https://nitter.kareem.one']);
+const failedAdvancedSearchHosts = new Map<string, number>();
+
+// Live health registry for every known Nitter instance
+const instanceHealthMap = new Map<string, NitterInstanceHealth>();
+let activePreferredHost: string = DEFAULT_NITTER_HOSTS[0];
+let lastMonitorSweepAt: number | null = null;
+let monitorIntervalHandle: ReturnType<typeof setInterval> | null = null;
+let activeHealthSweepPromise: Promise<NitterInstanceHealth[]> | null = null;
+
+function normalizeHostUrl(raw: string): string {
+  return raw.trim().replace(/\/+$/, '');
+}
+
+function hostLabelFromUrl(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url.replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
+  }
+}
+
+function ensureInstanceRecord(rawUrl: string): NitterInstanceHealth {
+  const url = normalizeHostUrl(rawUrl);
+  const existing = instanceHealthMap.get(url);
+  if (existing) return existing;
+
+  const record: NitterInstanceHealth = {
+    url,
+    host: hostLabelFromUrl(url),
+    status: 'unknown',
+    latencyMs: null,
+    rssOk: false,
+    searchOk: verifiedSearchHosts.has(url),
+    lastCheckedAt: null,
+    lastError: null,
+    consecutiveFailures: 0,
+    successCount: 0,
+    failureCount: 0,
+    isActive: url === activePreferredHost,
+  };
+  instanceHealthMap.set(url, record);
+  return record;
+}
+
+for (const host of DEFAULT_NITTER_HOSTS) {
+  ensureInstanceRecord(host);
+}
+
+function recordInstanceOutcome(
+  hostUrl: string,
+  outcome: {
+    ok: boolean;
+    latencyMs: number;
+    error?: string | null;
+    isSearch?: boolean;
+    searchSupported?: boolean;
+  }
+): void {
+  const rec = ensureInstanceRecord(hostUrl);
+  rec.lastCheckedAt = Date.now();
+  rec.latencyMs = Math.round(outcome.latencyMs);
+
+  if (outcome.ok) {
+    rec.successCount += 1;
+    rec.consecutiveFailures = 0;
+    rec.rssOk = true;
+    rec.lastError = null;
+    if (outcome.isSearch || outcome.searchSupported) {
+      rec.searchOk = true;
+    }
+    rec.status = outcome.latencyMs > 3800 ? 'degraded' : 'healthy';
+  } else {
+    rec.failureCount += 1;
+    rec.consecutiveFailures += 1;
+    rec.lastError = outcome.error || 'Request failed';
+    if (outcome.isSearch && outcome.searchSupported === false) {
+      rec.searchOk = false;
+      // Search operator unsupported doesn't necessarily mean timeline RSS is down
+      rec.status = rec.rssOk ? 'degraded' : 'down';
+    } else if (rec.consecutiveFailures >= 2 || !rec.rssOk) {
+      rec.rssOk = false;
+      rec.status = 'down';
+    } else {
+      rec.status = 'degraded';
+    }
+  }
+}
 
 async function fetchWithTimeout(
   url: string,
@@ -207,8 +335,255 @@ export async function getHealthyNitterHosts(): Promise<string[]> {
   }
 
   const merged = Array.from(new Set([...discovered, ...DEFAULT_NITTER_HOSTS]));
+  for (const host of merged) {
+    ensureInstanceRecord(host);
+  }
   cacheSet('nitter:hosts', merged, 15 * 60 * 1000);
   return merged;
+}
+
+async function probeNitterInstance(hostUrl: string): Promise<NitterInstanceHealth> {
+  const url = normalizeHostUrl(hostUrl);
+  const rec = ensureInstanceRecord(url);
+  const startedAt = Date.now();
+
+  try {
+    // 1. Probe search RSS with operator support first (highest-value capability)
+    const searchUrl = `${url}/search/rss?f=tweets&q=${encodeURIComponent('tech min_faves:20')}&e-replies=on&e-nativeretweets=on`;
+    const searchRes = await fetchWithTimeout(
+      searchUrl,
+      {
+        'User-Agent': 'Mozilla/5.0 (compatible; minisocial/1.0)',
+        Accept: 'application/rss+xml, application/xml, text/xml',
+      },
+      4200
+    );
+    const searchLatency = Date.now() - startedAt;
+
+    if (searchRes.ok) {
+      const xml = await searchRes.text();
+      if ((xml.includes('<rss') || xml.includes('<item>')) && !xml.includes("You're not authorized to use RSS")) {
+        verifiedSearchHosts.add(url);
+        failedAdvancedSearchHosts.delete(url);
+        recordInstanceOutcome(url, {
+          ok: true,
+          latencyMs: searchLatency,
+          isSearch: true,
+          searchSupported: true,
+        });
+        return { ...rec, isActive: url === activePreferredHost };
+      }
+    }
+
+    // 2. Fall back to probing standard profile RSS to differentiate degraded (no search) vs down
+    const rssStart = Date.now();
+    const rssRes = await fetchWithTimeout(
+      `${url}/github/rss`,
+      {
+        'User-Agent': 'Mozilla/5.0 (compatible; minisocial/1.0)',
+        Accept: 'application/rss+xml, application/xml, text/xml',
+      },
+      4000
+    );
+    const rssLatency = Date.now() - rssStart;
+
+    if (rssRes.ok) {
+      const xml = await rssRes.text();
+      if ((xml.includes('<rss') || xml.includes('<item>')) && !xml.includes("You're not authorized to use RSS")) {
+        rec.rssOk = true;
+        rec.searchOk = false;
+        rec.latencyMs = Math.round(rssLatency);
+        rec.lastCheckedAt = Date.now();
+        rec.consecutiveFailures = 0;
+        rec.successCount += 1;
+        rec.lastError = searchRes.ok ? 'Search RSS empty' : `Search HTTP ${searchRes.status}`;
+        rec.status = 'degraded';
+        return { ...rec, isActive: url === activePreferredHost };
+      }
+    }
+
+    recordInstanceOutcome(url, {
+      ok: false,
+      latencyMs: Date.now() - startedAt,
+      error: `HTTP ${rssRes.status || searchRes.status}`,
+    });
+  } catch (err) {
+    const msg =
+      err instanceof Error && err.name === 'AbortError'
+        ? 'Timed out'
+        : err instanceof Error
+          ? err.message
+          : 'Unreachable';
+    recordInstanceOutcome(url, {
+      ok: false,
+      latencyMs: Date.now() - startedAt,
+      error: msg,
+    });
+  }
+
+  return { ...rec, isActive: url === activePreferredHost };
+}
+
+function sortInstancesByHealth(list: NitterInstanceHealth[]): NitterInstanceHealth[] {
+  const rankStatus = (s: NitterInstanceStatus) => {
+    switch (s) {
+      case 'healthy':
+        return 0;
+      case 'degraded':
+        return 1;
+      case 'unknown':
+        return 2;
+      case 'down':
+      default:
+        return 3;
+    }
+  };
+
+  return [...list].sort((a, b) => {
+    const statusDiff = rankStatus(a.status) - rankStatus(b.status);
+    if (statusDiff !== 0) return statusDiff;
+    if (a.searchOk !== b.searchOk) return a.searchOk ? -1 : 1;
+    const latA = a.latencyMs ?? 99999;
+    const latB = b.latencyMs ?? 99999;
+    return latA - latB;
+  });
+}
+
+export async function runNitterHealthChecks(force = false): Promise<NitterInstanceHealth[]> {
+  if (activeHealthSweepPromise) {
+    return activeHealthSweepPromise;
+  }
+
+  const staleMs = 2 * 60 * 1000;
+  if (!force && lastMonitorSweepAt && Date.now() - lastMonitorSweepAt < staleMs) {
+    return getNitterInstancesSnapshot().instances;
+  }
+
+  activeHealthSweepPromise = (async () => {
+    try {
+      const hosts = await getHealthyNitterHosts();
+      await Promise.allSettled(hosts.map((h) => probeNitterInstance(h)));
+      lastMonitorSweepAt = Date.now();
+
+      // If active instance is down and a healthy alternative exists, promote it automatically
+      const current = instanceHealthMap.get(activePreferredHost);
+      if (current && current.status === 'down') {
+        const sorted = sortInstancesByHealth(Array.from(instanceHealthMap.values()));
+        const healthyAlt = sorted.find((i) => i.status === 'healthy' || i.status === 'degraded');
+        if (healthyAlt) {
+          activePreferredHost = healthyAlt.url;
+        }
+      }
+
+      return getNitterInstancesSnapshot().instances;
+    } finally {
+      activeHealthSweepPromise = null;
+    }
+  })();
+
+  return activeHealthSweepPromise;
+}
+
+export function startNitterHealthMonitor(): void {
+  if (monitorIntervalHandle) return;
+
+  // Initial non-blocking probe shortly after server boot
+  const bootTimer = setTimeout(() => {
+    void runNitterHealthChecks(true).catch(() => {});
+  }, 1500);
+  bootTimer.unref?.();
+
+  // Periodic health sweep every 5 minutes
+  monitorIntervalHandle = setInterval(() => {
+    void runNitterHealthChecks(true).catch(() => {});
+  }, 5 * 60 * 1000);
+  monitorIntervalHandle.unref?.();
+}
+
+export function getNitterInstancesSnapshot(): {
+  activeInstance: string;
+  instances: NitterInstanceHealth[];
+  lastCheckedAt: number | null;
+} {
+  const raw = Array.from(instanceHealthMap.values()).map((item) => ({
+    ...item,
+    isActive: item.url === activePreferredHost,
+  }));
+  const sorted = sortInstancesByHealth(raw);
+  return {
+    activeInstance: activePreferredHost,
+    instances: sorted,
+    lastCheckedAt: lastMonitorSweepAt,
+  };
+}
+
+export function resolveAllowedNitterInstance(rawUrl?: string | null): string | null {
+  if (!rawUrl || typeof rawUrl !== 'string') return null;
+  const normalized = normalizeHostUrl(rawUrl);
+  if (instanceHealthMap.has(normalized)) {
+    return normalized;
+  }
+  // Allow matching by hostname alone (e.g. "nitter.kareem.one") against allowlist
+  const cleanHost = hostLabelFromUrl(normalized).toLowerCase();
+  for (const key of instanceHealthMap.keys()) {
+    if (hostLabelFromUrl(key).toLowerCase() === cleanHost) {
+      return key;
+    }
+  }
+  return null;
+}
+
+export async function switchNitterInstance(targetUrl?: string | null): Promise<{
+  activeInstance: string;
+  previousInstance: string;
+  instances: NitterInstanceHealth[];
+  lastCheckedAt: number | null;
+}> {
+  // Ensure candidate hosts are loaded before validating or rotating
+  await getHealthyNitterHosts();
+  const previousInstance = activePreferredHost;
+
+  if (targetUrl) {
+    const allowed = resolveAllowedNitterInstance(targetUrl);
+    if (!allowed) {
+      throw new Error('Selected Nitter instance is not in the verified instance pool.');
+    }
+    activePreferredHost = allowed;
+    clearXFeedCache();
+    // Run a quick probe on the newly chosen instance if never checked
+    const rec = instanceHealthMap.get(allowed);
+    if (!rec?.lastCheckedAt || Date.now() - rec.lastCheckedAt > 60_000) {
+      await probeNitterInstance(allowed);
+    }
+    const snap = getNitterInstancesSnapshot();
+    return {
+      ...snap,
+      previousInstance,
+    };
+  }
+
+  // Automatic recovery switch: refresh health if stale, then pick the healthiest instance != previous
+  await runNitterHealthChecks(
+    !lastMonitorSweepAt || Date.now() - lastMonitorSweepAt > 45_000
+  );
+  const sorted = getNitterInstancesSnapshot().instances;
+  const nextBest =
+    sorted.find((i) => i.url !== previousInstance && i.status === 'healthy') ||
+    sorted.find((i) => i.url !== previousInstance && i.status === 'degraded') ||
+    sorted.find((i) => i.url !== previousInstance && i.status === 'unknown') ||
+    sorted.find((i) => i.url !== previousInstance) ||
+    sorted[0];
+
+  if (nextBest) {
+    activePreferredHost = nextBest.url;
+  }
+  clearXFeedCache();
+
+  const snap = getNitterInstancesSnapshot();
+  return {
+    ...snap,
+    previousInstance,
+  };
 }
 
 function extractTag(block: string, tag: string): string {
@@ -246,7 +621,11 @@ function htmlToCleanText(html: string): string {
     .trim();
 }
 
-function parseNitterRss(xml: string, requestedHandle: string): NormalizedXPost[] {
+function parseNitterRss(
+  xml: string,
+  requestedHandle: string,
+  options: { excludeReplies?: boolean; excludeRetweets?: boolean } = {}
+): NormalizedXPost[] {
   if (!xml.includes('<rss') && !xml.includes('<item>')) return [];
   if (xml.includes("You're not authorized to use RSS")) return [];
 
@@ -257,6 +636,7 @@ function parseNitterRss(xml: string, requestedHandle: string): NormalizedXPost[]
 
   const items = xml.match(/<item>[\s\S]*?<\/item>/gi) || [];
   const posts: NormalizedXPost[] = [];
+  const fallbackReplyPosts: NormalizedXPost[] = [];
 
   for (const item of items) {
     const rawTitle = decodeEntities(extractTag(item, 'title')).trim();
@@ -271,8 +651,9 @@ function parseNitterRss(xml: string, requestedHandle: string): NormalizedXPost[]
     const tweetId = idMatch ? idMatch[1] : '';
     if (!tweetId) continue;
 
-    // Detect retweet prefix in title ("RT by @handle: ...")
+    // Detect retweet / reply prefix in title ("RT by @handle: ..." / "R to @handle: ...")
     let isRetweet = false;
+    let isReply = false;
     let retweetedBy: string | null = null;
     let cleanedTitle = rawTitle;
     const rtMatch = rawTitle.match(/^RT by @([a-zA-Z0-9_]+):\s*/i);
@@ -281,7 +662,12 @@ function parseNitterRss(xml: string, requestedHandle: string): NormalizedXPost[]
       retweetedBy = rtMatch[1];
       cleanedTitle = rawTitle.slice(rtMatch[0].length).trim();
     } else if (/^R to @/i.test(rawTitle)) {
+      isReply = true;
       cleanedTitle = rawTitle.replace(/^R to @[a-zA-Z0-9_]+:\s*/i, '').trim();
+    }
+
+    if (options.excludeRetweets && isRetweet) {
+      continue;
     }
 
     // Extract images from description HTML
@@ -310,7 +696,7 @@ function parseNitterRss(xml: string, requestedHandle: string): NormalizedXPost[]
 
     const xUrl = `https://x.com/${effectiveAuthor}/status/${tweetId}`;
 
-    posts.push({
+    const postObj: NormalizedXPost = {
       id: `x_${tweetId}`,
       fullname: `x_${tweetId}`,
       source: 'x',
@@ -344,24 +730,64 @@ function parseNitterRss(xml: string, requestedHandle: string): NormalizedXPost[]
       isRetweet,
       retweetedBy,
       quotedPost: null,
-    });
+    };
+
+    if (options.excludeReplies && isReply) {
+      fallbackReplyPosts.push(postObj);
+    } else {
+      posts.push(postObj);
+    }
   }
 
-  return posts;
+  return posts.length > 0 ? posts : fallbackReplyPosts;
+}
+
+interface NitterFetchOutcome {
+  posts: NormalizedXPost[];
+  hadValidResponse: boolean;
+  usedHost: string | null;
+  lastError: string | null;
+  failedHost: string | null;
+}
+
+function buildOrderedHostPool(allHosts: string[], pinnedHost?: string | null): string[] {
+  if (pinnedHost) {
+    return [pinnedHost];
+  }
+  const active = activePreferredHost;
+  const sortedHealth = sortInstancesByHealth(
+    allHosts.map((h) => ensureInstanceRecord(h))
+  ).map((r) => r.url);
+
+  if (active && sortedHealth.includes(active)) {
+    const activeRec = instanceHealthMap.get(active);
+    if (!activeRec || activeRec.status !== 'down') {
+      return [active, ...sortedHealth.filter((h) => h !== active)];
+    }
+  }
+  return sortedHealth;
 }
 
 async function fetchHandleFromNitter(
   handle: string,
-  forceRefresh = false
-): Promise<NormalizedXPost[]> {
-  const key = `x:handle:${handle.toLowerCase()}`;
+  forceRefresh = false,
+  pinnedHost?: string | null
+): Promise<NitterFetchOutcome> {
+  const hostTag = pinnedHost ? hostLabelFromUrl(pinnedHost) : 'auto';
+  const key = `x:handle:${hostTag}:${handle.toLowerCase()}`;
   if (!forceRefresh) {
-    const cached = cacheGet<NormalizedXPost[]>(key);
+    const cached = cacheGet<NitterFetchOutcome>(key);
     if (cached) return cached;
   }
 
-  const hosts = await getHealthyNitterHosts();
+  const allHosts = await getHealthyNitterHosts();
+  const hosts = buildOrderedHostPool(allHosts, pinnedHost);
+  let lastError: string | null = null;
+  let failedHost: string | null = null;
+  let hadValidResponse = false;
+
   for (const host of hosts) {
+    const startedAt = Date.now();
     try {
       const url = `${host}/${encodeURIComponent(handle)}/rss`;
       const res = await fetchWithTimeout(
@@ -372,19 +798,55 @@ async function fetchHandleFromNitter(
         },
         4500
       );
-      if (!res.ok) continue;
+      const latencyMs = Date.now() - startedAt;
+      if (!res.ok) {
+        lastError = `HTTP ${res.status}`;
+        failedHost = host;
+        recordInstanceOutcome(host, { ok: false, latencyMs, error: lastError });
+        continue;
+      }
       const xml = await res.text();
+      if (!xml.includes('<rss') && !xml.includes('<item>')) {
+        lastError = 'Invalid RSS response';
+        failedHost = host;
+        recordInstanceOutcome(host, { ok: false, latencyMs, error: lastError });
+        continue;
+      }
+      if (xml.includes("You're not authorized to use RSS")) {
+        lastError = 'RSS blocked by instance';
+        failedHost = host;
+        recordInstanceOutcome(host, { ok: false, latencyMs, error: lastError });
+        continue;
+      }
+
+      hadValidResponse = true;
+      recordInstanceOutcome(host, { ok: true, latencyMs });
       const parsed = parseNitterRss(xml, handle);
       if (parsed.length > 0) {
-        cacheSet(key, parsed, 3 * 60 * 1000);
-        return parsed;
+        const out: NitterFetchOutcome = {
+          posts: parsed,
+          hadValidResponse: true,
+          usedHost: host,
+          lastError: null,
+          failedHost: null,
+        };
+        cacheSet(key, out, 3 * 60 * 1000);
+        return out;
       }
-    } catch {
-      // Try next healthy Nitter host
+    } catch (err) {
+      const latencyMs = Date.now() - startedAt;
+      lastError =
+        err instanceof Error && err.name === 'AbortError'
+          ? 'Connection timed out'
+          : err instanceof Error
+            ? err.message
+            : 'Unreachable';
+      failedHost = host;
+      recordInstanceOutcome(host, { ok: false, latencyMs, error: lastError });
     }
   }
 
-  return [];
+  return { posts: [], hadValidResponse, usedHost: null, lastError, failedHost };
 }
 
 function parseNitterHtmlSearch(html: string, topic: string): NormalizedXPost[] {
@@ -470,75 +932,382 @@ function parseNitterHtmlSearch(html: string, topic: string): NormalizedXPost[] {
   return posts;
 }
 
-async function fetchTopicFromNitter(
-  topic: string,
-  forceRefresh = false
-): Promise<NormalizedXPost[]> {
-  const cleanTopic = sanitizeXTopic(topic);
-  if (!cleanTopic) return [];
+function buildTopicQueryExpr(cleanTopic: string): string {
+  if (cleanTopic.includes(' ')) {
+    return `"${cleanTopic}"`;
+  }
+  // Smart expansion for alphanumeric topics like "gta6" -> (gta6 OR "gta 6"), "gpt5" -> (gpt5 OR "gpt 5")
+  const alphaNumMatch = cleanTopic.match(/^([a-zA-Z]{2,})(\d{1,2})$/);
+  if (alphaNumMatch) {
+    const spaced = `${alphaNumMatch[1]} ${alphaNumMatch[2]}`;
+    return `(${cleanTopic} OR "${spaced}")`;
+  }
+  return cleanTopic;
+}
 
-  const key = `x:topic:${cleanTopic.toLowerCase()}`;
-  if (!forceRefresh) {
-    const cached = cacheGet<NormalizedXPost[]>(key);
-    if (cached) return cached;
+function getSinceDateParam(timeframe: string): string | null {
+  const now = Date.now();
+  let daysBack: number | null = null;
+  switch (timeframe) {
+    case 'hour':
+    case 'day':
+      daysBack = 1;
+      break;
+    case 'week':
+      daysBack = 7;
+      break;
+    case 'month':
+      daysBack = 30;
+      break;
+    case 'year':
+      daysBack = 365;
+      break;
+    default:
+      daysBack = null;
+  }
+  if (!daysBack) return null;
+  const d = new Date(now - daysBack * 86_400 * 1000);
+  return d.toISOString().slice(0, 10);
+}
+
+function getOrderedSearchHosts(allHosts: string[], pinnedHost?: string | null): string[] {
+  if (pinnedHost) {
+    return [pinnedHost];
+  }
+  const now = Date.now();
+  const activeFirst: string[] = [];
+  const preferred: string[] = [];
+  const untried: string[] = [];
+  const cooledDown: string[] = [];
+
+  for (const host of allHosts) {
+    const rec = instanceHealthMap.get(host);
+    if (host === activePreferredHost && rec?.status !== 'down') {
+      activeFirst.push(host);
+    } else if (verifiedSearchHosts.has(host) && rec?.status !== 'down') {
+      preferred.push(host);
+    } else {
+      const failedUntil = failedAdvancedSearchHosts.get(host) ?? 0;
+      if (now < failedUntil || rec?.status === 'down') {
+        cooledDown.push(host);
+      } else {
+        untried.push(host);
+      }
+    }
   }
 
-  const queryStr = cleanTopic.includes(' ') ? `"${cleanTopic}"` : cleanTopic;
-  const hosts = await getHealthyNitterHosts();
+  return [...activeFirst, ...preferred, ...untried, ...cooledDown];
+}
 
-  // 1. Try Nitter Search RSS across healthy hosts
+async function queryNitterTopicRss(
+  hosts: string[],
+  cleanTopic: string,
+  query: string,
+  extraParams: string,
+  timeoutMs: number,
+  isAdvancedQuery: boolean,
+  ignoreCooldown = false
+): Promise<NitterFetchOutcome> {
+  const now = Date.now();
+  let hadValidResponse = false;
+  let lastError: string | null = null;
+  let failedHost: string | null = null;
+
   for (const host of hosts) {
+    if (!ignoreCooldown && isAdvancedQuery && (failedAdvancedSearchHosts.get(host) ?? 0) > now) {
+      continue;
+    }
+    const startedAt = Date.now();
     try {
-      const url = `${host}/search/rss?f=tweets&q=${encodeURIComponent(queryStr)}`;
+      const url = `${host}/search/rss?f=tweets&q=${encodeURIComponent(query)}${extraParams}`;
       const res = await fetchWithTimeout(
         url,
         {
           'User-Agent': 'Mozilla/5.0 (compatible; minisocial/1.0)',
           Accept: 'application/rss+xml, application/xml, text/xml',
         },
-        4500
+        timeoutMs
       );
-      if (!res.ok) continue;
+      const latencyMs = Date.now() - startedAt;
+
+      if (res.status === 404 || res.status === 403 || res.status === 410) {
+        lastError = `HTTP ${res.status}`;
+        failedHost = host;
+        if (isAdvancedQuery) {
+          failedAdvancedSearchHosts.set(host, now + 10 * 60 * 1000);
+          recordInstanceOutcome(host, {
+            ok: false,
+            latencyMs,
+            error: `Search ${lastError}`,
+            isSearch: true,
+            searchSupported: false,
+          });
+        } else {
+          recordInstanceOutcome(host, { ok: false, latencyMs, error: lastError });
+        }
+        continue;
+      }
+      if (!res.ok) {
+        lastError = `HTTP ${res.status}`;
+        failedHost = host;
+        recordInstanceOutcome(host, { ok: false, latencyMs, error: lastError, isSearch: true });
+        continue;
+      }
+
       const xml = await res.text();
-      const parsed = parseNitterRss(xml, cleanTopic).map((post) => ({
+      if (!xml.includes('<rss') && !xml.includes('<item>')) {
+        lastError = 'Invalid RSS response';
+        failedHost = host;
+        recordInstanceOutcome(host, { ok: false, latencyMs, error: lastError, isSearch: true });
+        continue;
+      }
+      if (xml.includes("You're not authorized to use RSS")) {
+        lastError = 'RSS blocked by instance';
+        failedHost = host;
+        recordInstanceOutcome(host, { ok: false, latencyMs, error: lastError, isSearch: true });
+        continue;
+      }
+
+      hadValidResponse = true;
+      const parsed = parseNitterRss(xml, cleanTopic, {
+        excludeReplies: true,
+        excludeRetweets: true,
+      }).map((post) => ({
         ...post,
         subreddit: post.author,
         flair: post.flair || `#${cleanTopic}`,
       }));
+
       if (parsed.length > 0) {
-        cacheSet(key, parsed, 3 * 60 * 1000);
-        return parsed;
+        if (isAdvancedQuery) {
+          verifiedSearchHosts.add(host);
+          failedAdvancedSearchHosts.delete(host);
+        }
+        recordInstanceOutcome(host, {
+          ok: true,
+          latencyMs,
+          isSearch: true,
+          searchSupported: isAdvancedQuery,
+        });
+        return {
+          posts: parsed,
+          hadValidResponse: true,
+          usedHost: host,
+          lastError: null,
+          failedHost: null,
+        };
       }
-    } catch {
-      // Try next healthy Nitter host
+    } catch (err) {
+      const latencyMs = Date.now() - startedAt;
+      lastError =
+        err instanceof Error && err.name === 'AbortError'
+          ? 'Connection timed out'
+          : err instanceof Error
+            ? err.message
+            : 'Unreachable';
+      failedHost = host;
+      recordInstanceOutcome(host, { ok: false, latencyMs, error: lastError, isSearch: true });
     }
   }
+  return { posts: [], hadValidResponse, usedHost: null, lastError, failedHost };
+}
 
-  // 2. Fallback to Nitter HTML search if search RSS was disabled on available hosts
-  for (const host of hosts.slice(0, 3)) {
-    try {
-      const url = `${host}/search?f=tweets&q=${encodeURIComponent(queryStr)}`;
-      const res = await fetchWithTimeout(
-        url,
-        {
-          'User-Agent': 'Mozilla/5.0 (compatible; minisocial/1.0)',
-          Accept: 'text/html',
-        },
-        4500
+async function fetchTopicFromNitter(
+  topic: string,
+  sort = 'hot',
+  timeframe = 'day',
+  forceRefresh = false,
+  pinnedHost?: string | null
+): Promise<NitterFetchOutcome> {
+  const cleanTopic = sanitizeXTopic(topic);
+  if (!cleanTopic) {
+    return { posts: [], hadValidResponse: true, usedHost: null, lastError: null, failedHost: null };
+  }
+
+  const bucket =
+    sort === 'new'
+      ? 'new'
+      : sort === 'top' || sort === 'controversial'
+        ? `top:${timeframe}`
+        : 'hot';
+  const hostTag = pinnedHost ? hostLabelFromUrl(pinnedHost) : 'auto';
+  const key = `x:topic:${hostTag}:${cleanTopic.toLowerCase()}:${bucket}`;
+  if (!forceRefresh) {
+    const cached = cacheGet<NitterFetchOutcome>(key);
+    if (cached && cached.posts.length > 0) return cached;
+  }
+
+  const baseExpr = buildTopicQueryExpr(cleanTopic);
+  const allHosts = await getHealthyNitterHosts();
+  const orderedHosts = getOrderedSearchHosts(allHosts, pinnedHost);
+  const cleanParams = '&e-replies=on&e-nativeretweets=on';
+  const sinceDate =
+    sort === 'top' || sort === 'controversial' ? getSinceDateParam(timeframe) : null;
+  const sinceClause = sinceDate ? ` since:${sinceDate}` : '';
+
+  const dedup = new Map<string, NormalizedXPost>();
+  let hadValidResponse = false;
+  let usedHost: string | null = null;
+  let lastError: string | null = null;
+  let failedHost: string | null = null;
+
+  const absorb = (outcome: NitterFetchOutcome) => {
+    if (outcome.hadValidResponse) hadValidResponse = true;
+    if (outcome.usedHost && !usedHost) usedHost = outcome.usedHost;
+    if (outcome.lastError) lastError = outcome.lastError;
+    if (outcome.failedHost) failedHost = outcome.failedHost;
+    for (const item of outcome.posts) {
+      if (!dedup.has(item.id)) {
+        dedup.set(item.id, item);
+      }
+    }
+  };
+
+  if (sort === 'new') {
+    const [engagedRecent, freshOriginal] = await Promise.all([
+      queryNitterTopicRss(
+        orderedHosts,
+        cleanTopic,
+        `${baseExpr} min_faves:20`,
+        cleanParams,
+        4200,
+        true,
+        Boolean(pinnedHost)
+      ),
+      queryNitterTopicRss(
+        orderedHosts,
+        cleanTopic,
+        baseExpr,
+        cleanParams,
+        4200,
+        true,
+        Boolean(pinnedHost)
+      ),
+    ]);
+    absorb(engagedRecent);
+    absorb(freshOriginal);
+  } else {
+    const tiers =
+      sort === 'top'
+        ? [
+            `${baseExpr} min_faves:500${sinceClause}`,
+            `${baseExpr} min_faves:100${sinceClause}`,
+            `${baseExpr} min_faves:20`,
+          ]
+        : [
+            `${baseExpr} min_faves:150`,
+            `${baseExpr} min_faves:25`,
+          ];
+
+    for (const q of tiers) {
+      const batch = await queryNitterTopicRss(
+        orderedHosts,
+        cleanTopic,
+        q,
+        cleanParams,
+        4500,
+        true,
+        Boolean(pinnedHost)
       );
-      if (!res.ok) continue;
-      const html = await res.text();
-      const parsed = parseNitterHtmlSearch(html, cleanTopic);
-      if (parsed.length > 0) {
-        cacheSet(key, parsed, 3 * 60 * 1000);
-        return parsed;
-      }
-    } catch {
-      // Try next host
+      absorb(batch);
+      if (dedup.size >= 10) break;
+      // If pinned host explicitly errored with 403/404/410 on advanced search, don't waste retries on more tiers
+      if (pinnedHost && !batch.hadValidResponse && batch.lastError) break;
+    }
+
+    if (dedup.size < 6 && (!pinnedHost || hadValidResponse)) {
+      const fallbackClean = await queryNitterTopicRss(
+        orderedHosts,
+        cleanTopic,
+        baseExpr,
+        cleanParams,
+        4200,
+        true,
+        Boolean(pinnedHost)
+      );
+      absorb(fallbackClean);
     }
   }
 
-  return [];
+  // Last-resort RSS fallback (plain query on candidate hosts if advanced search failed)
+  if (dedup.size === 0) {
+    const simpleQuery = cleanTopic.includes(' ') ? `"${cleanTopic}"` : cleanTopic;
+    const plain = await queryNitterTopicRss(
+      pinnedHost ? [pinnedHost] : allHosts,
+      cleanTopic,
+      simpleQuery,
+      '',
+      4500,
+      false,
+      Boolean(pinnedHost)
+    );
+    absorb(plain);
+  }
+
+  // HTML search fallback if all RSS endpoints failed
+  if (dedup.size === 0) {
+    const simpleQuery = cleanTopic.includes(' ') ? `"${cleanTopic}"` : cleanTopic;
+    for (const host of orderedHosts.slice(0, pinnedHost ? 1 : 3)) {
+      const startedAt = Date.now();
+      try {
+        const url = `${host}/search?f=tweets&q=${encodeURIComponent(simpleQuery)}${cleanParams}`;
+        const res = await fetchWithTimeout(
+          url,
+          {
+            'User-Agent': 'Mozilla/5.0 (compatible; minisocial/1.0)',
+            Accept: 'text/html',
+          },
+          4500
+        );
+        const latencyMs = Date.now() - startedAt;
+        if (!res.ok) {
+          lastError = `HTTP ${res.status}`;
+          failedHost = host;
+          recordInstanceOutcome(host, { ok: false, latencyMs, error: lastError });
+          continue;
+        }
+        const html = await res.text();
+        if (html.includes('anubis_challenge') || html.includes('Just a moment')) {
+          lastError = 'Bot challenge blocked request';
+          failedHost = host;
+          recordInstanceOutcome(host, { ok: false, latencyMs, error: lastError });
+          continue;
+        }
+        const parsed = parseNitterHtmlSearch(html, cleanTopic);
+        if (parsed.length > 0) {
+          hadValidResponse = true;
+          usedHost = host;
+          recordInstanceOutcome(host, { ok: true, latencyMs, isSearch: true });
+          for (const item of parsed) {
+            if (!dedup.has(item.id)) dedup.set(item.id, item);
+          }
+          break;
+        }
+      } catch (err) {
+        lastError =
+          err instanceof Error && err.name === 'AbortError'
+            ? 'Connection timed out'
+            : err instanceof Error
+              ? err.message
+              : 'Unreachable';
+        failedHost = host;
+        recordInstanceOutcome(host, { ok: false, latencyMs: Date.now() - startedAt, error: lastError });
+      }
+    }
+  }
+
+  const results = Array.from(dedup.values());
+  const out: NitterFetchOutcome = {
+    posts: results,
+    hadValidResponse,
+    usedHost,
+    lastError,
+    failedHost,
+  };
+  if (results.length > 0) {
+    cacheSet(key, out, 2 * 60 * 1000);
+  }
+  return out;
 }
 
 export async function enrichTweetWithFxTwitter(
@@ -677,7 +1446,8 @@ export async function fetchXFeed(params: {
   timeframe: string;
   limit?: number;
   forceRefresh?: boolean;
-}): Promise<{ posts: NormalizedXPost[]; after: string | null; source: string }> {
+  preferredInstance?: string | null;
+}): Promise<{ posts: NormalizedXPost[]; after: string | null; source: string; instance: string | null }> {
   const {
     handles = [],
     topics = [],
@@ -685,6 +1455,7 @@ export async function fetchXFeed(params: {
     timeframe,
     limit = 25,
     forceRefresh = false,
+    preferredInstance = null,
   } = params;
   const cleanHandles = Array.from(
     new Set(handles.map((h) => sanitizeXHandle(h).toLowerCase()).filter(Boolean))
@@ -694,32 +1465,57 @@ export async function fetchXFeed(params: {
   ).slice(0, 12);
 
   if (cleanHandles.length === 0 && cleanTopics.length === 0) {
-    return { posts: [], after: null, source: 'nitter' };
+    return { posts: [], after: null, source: 'nitter', instance: activePreferredHost };
   }
 
-  const feedKey = `x:feed:${cleanHandles.sort().join(',')}|t:${cleanTopics
+  // Ensure allowlist is populated before validating any user-provided instance
+  await getHealthyNitterHosts();
+  const pinnedHost = preferredInstance ? resolveAllowedNitterInstance(preferredInstance) : null;
+  const instanceKey = pinnedHost ? hostLabelFromUrl(pinnedHost) : hostLabelFromUrl(activePreferredHost);
+
+  const feedKey = `x:feed:${instanceKey}:${cleanHandles.sort().join(',')}|t:${cleanTopics
     .map((t) => t.toLowerCase())
     .sort()
     .join(',')}:${sort}:${timeframe}:${limit}`;
   if (!forceRefresh) {
-    const cached = cacheGet<{ posts: NormalizedXPost[]; after: string | null; source: string }>(
-      feedKey
-    );
+    const cached = cacheGet<{
+      posts: NormalizedXPost[];
+      after: string | null;
+      source: string;
+      instance: string | null;
+    }>(feedKey);
     if (cached) return cached;
   }
 
-  const [perHandleLists, perTopicLists] = await Promise.all([
-    Promise.all(cleanHandles.map((h) => fetchHandleFromNitter(h, forceRefresh))),
-    Promise.all(cleanTopics.map((t) => fetchTopicFromNitter(t, forceRefresh))),
+  const [perHandleOutcomes, perTopicOutcomes] = await Promise.all([
+    Promise.all(cleanHandles.map((h) => fetchHandleFromNitter(h, forceRefresh, pinnedHost))),
+    Promise.all(
+      cleanTopics.map((t) => fetchTopicFromNitter(t, sort, timeframe, forceRefresh, pinnedHost))
+    ),
   ]);
 
+  const allOutcomes = [...perHandleOutcomes, ...perTopicOutcomes];
+  const anyValidResponse = allOutcomes.some((o) => o.hadValidResponse);
+  const usedHost = allOutcomes.find((o) => o.usedHost)?.usedHost ?? pinnedHost ?? activePreferredHost;
+  const firstError = allOutcomes.find((o) => o.lastError)?.lastError ?? null;
+  const firstFailedHost = allOutcomes.find((o) => o.failedHost)?.failedHost ?? pinnedHost ?? activePreferredHost;
+
   const dedup = new Map<string, NormalizedXPost>();
-  for (const list of [...perHandleLists, ...perTopicLists]) {
-    for (const post of list) {
+  for (const outcome of allOutcomes) {
+    for (const post of outcome.posts) {
       if (!dedup.has(post.id)) {
         dedup.set(post.id, post);
       }
     }
+  }
+
+  if (dedup.size === 0 && !anyValidResponse) {
+    const hostName = firstFailedHost ? hostLabelFromUrl(firstFailedHost) : 'Nitter';
+    const detail = firstError ? ` (${firstError})` : '';
+    throw new NitterConnectionError(
+      `Connection to ${hostName} failed${detail}. Try switching to another Nitter instance.`,
+      firstFailedHost
+    );
   }
 
   let combined = Array.from(dedup.values()).sort((a, b) => b.createdUtc - a.createdUtc);
@@ -737,7 +1533,7 @@ export async function fetchXFeed(params: {
   }
 
   // Enrich newest items with FxTwitter in parallel so likes, reposts, replies, views, and full media appear
-  const toEnrich = combined.slice(0, Math.min(18, limit));
+  const toEnrich = combined.slice(0, Math.min(24, limit));
   const rest = combined.slice(toEnrich.length);
   const enrichedHead = await Promise.all(
     toEnrich.map((post) => enrichTweetWithFxTwitter(post, false))
@@ -750,8 +1546,11 @@ export async function fetchXFeed(params: {
     posts: ranked,
     after: null,
     source: 'nitter',
+    instance: usedHost,
   };
-  cacheSet(feedKey, result, 3 * 60 * 1000);
+  if (ranked.length > 0) {
+    cacheSet(feedKey, result, 2 * 60 * 1000);
+  }
   return result;
 }
 
@@ -834,14 +1633,25 @@ export async function fetchXTweetDetails(params: {
   handle: string;
   tweetId: string;
   forceRefresh?: boolean;
-}): Promise<{ post?: NormalizedXPost; comments: NormalizedXComment[] }> {
+  preferredInstance?: string | null;
+}): Promise<{ post?: NormalizedXPost; comments: NormalizedXComment[]; instance?: string | null }> {
   const handle = sanitizeXHandle(params.handle);
   const rawId = params.tweetId.replace(/^x_/, '').replace(/[^0-9]/g, '');
   if (!handle || !rawId) return { comments: [] };
 
-  const cacheKey = `x:tweet:${rawId}`;
+  await getHealthyNitterHosts();
+  const pinnedHost = params.preferredInstance
+    ? resolveAllowedNitterInstance(params.preferredInstance)
+    : null;
+  const hostTag = pinnedHost ? hostLabelFromUrl(pinnedHost) : hostLabelFromUrl(activePreferredHost);
+
+  const cacheKey = `x:tweet:${hostTag}:${rawId}`;
   if (!params.forceRefresh) {
-    const cached = cacheGet<{ post?: NormalizedXPost; comments: NormalizedXComment[] }>(cacheKey);
+    const cached = cacheGet<{
+      post?: NormalizedXPost;
+      comments: NormalizedXComment[];
+      instance?: string | null;
+    }>(cacheKey);
     if (cached) return cached;
   }
 
@@ -874,27 +1684,43 @@ export async function fetchXTweetDetails(params: {
     stickied: false,
   };
 
+  let usedHost: string | null = null;
   const [enriched, replies] = await Promise.all([
     enrichTweetWithFxTwitter(basePost, params.forceRefresh),
     (async () => {
-      const hosts = await getHealthyNitterHosts();
-      for (const host of hosts.slice(0, 3)) {
+      const allHosts = await getHealthyNitterHosts();
+      const hosts = buildOrderedHostPool(allHosts, pinnedHost);
+      for (const host of hosts.slice(0, pinnedHost ? 1 : 3)) {
+        const startedAt = Date.now();
         try {
           const res = await fetchWithTimeout(
             `${host}/${encodeURIComponent(handle)}/status/${encodeURIComponent(rawId)}`,
             {
-              'User-Agent': 'Mozilla/5.0 (compatible; Subfeed/1.0)',
+              'User-Agent': 'Mozilla/5.0 (compatible; minisocial/1.0)',
               Accept: 'text/html',
             },
             4500
           );
-          if (!res.ok) continue;
+          const latencyMs = Date.now() - startedAt;
+          if (!res.ok) {
+            recordInstanceOutcome(host, { ok: false, latencyMs, error: `HTTP ${res.status}` });
+            continue;
+          }
           const html = await res.text();
-          if (html.includes('anubis_challenge') || html.includes('Just a moment')) continue;
+          if (html.includes('anubis_challenge') || html.includes('Just a moment')) {
+            recordInstanceOutcome(host, { ok: false, latencyMs, error: 'Bot challenge' });
+            continue;
+          }
+          recordInstanceOutcome(host, { ok: true, latencyMs });
+          usedHost = host;
           const parsed = parseNitterHtmlReplies(html, handle);
           if (parsed.length > 0) return parsed;
-        } catch {
-          // Try next host
+        } catch (err) {
+          recordInstanceOutcome(host, {
+            ok: false,
+            latencyMs: Date.now() - startedAt,
+            error: err instanceof Error ? err.message : 'Unreachable',
+          });
         }
       }
       return [] as NormalizedXComment[];
@@ -904,6 +1730,7 @@ export async function fetchXTweetDetails(params: {
   const result = {
     post: enriched.title ? enriched : undefined,
     comments: replies,
+    instance: usedHost,
   };
   cacheSet(cacheKey, result, 3 * 60 * 1000);
   return result;

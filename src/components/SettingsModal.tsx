@@ -17,6 +17,7 @@ import {
 import type {
   FeedDensity,
   FontOption,
+  NitterInstanceHealth,
   SortOption,
   SourceFilter,
   ThemeOption,
@@ -33,12 +34,18 @@ interface SettingsModalProps {
   font: FontOption;
   savedCount: number;
   loading: boolean;
+  activeNitterInstance: string | null;
+  nitterInstances: NitterInstanceHealth[];
+  checkingNitterHealth: boolean;
+  switchingNitterInstance: boolean;
   onChangeSort: (sort: SortOption) => void;
   onChangeTimeframe: (tf: TimeframeOption) => void;
   onChangeSourceFilter: (source: SourceFilter) => void;
   onChangeDensity: (density: FeedDensity) => void;
   onChangeTheme: (theme: ThemeOption) => void;
   onChangeFont: (font: FontOption) => void;
+  onRefreshNitterHealth: () => void;
+  onSelectNitterInstance: (instanceUrl: string) => void;
   onRefreshFeed: () => void;
   onClearCache: () => void;
   onClearSaved: () => void;
@@ -110,7 +117,26 @@ const SOURCE_OPTIONS: DropdownOption<SourceFilter>[] = [
   { value: 'x', label: 'X (@)' },
 ];
 
-type MenuKey = 'theme' | 'font' | 'sort' | 'timeframe' | 'layout' | 'source';
+type MenuKey = 'theme' | 'font' | 'sort' | 'timeframe' | 'layout' | 'source' | 'nitter';
+
+function getHealthDotClass(status: NitterInstanceHealth['status']): string {
+  switch (status) {
+    case 'healthy':
+      return 'bg-emerald-500';
+    case 'degraded':
+      return 'bg-amber-400';
+    case 'down':
+      return 'bg-red-500';
+    default:
+      return 'bg-zinc-400';
+  }
+}
+
+function getHealthMetaLabel(inst: NitterInstanceHealth): string {
+  if (inst.status === 'down') return 'Down';
+  if (inst.latencyMs != null) return `${inst.latencyMs}ms`;
+  return inst.status === 'degraded' ? 'Limited' : 'Unchecked';
+}
 
 interface SettingDropdownRowProps<T extends string> {
   id: MenuKey;
@@ -260,12 +286,18 @@ export function SettingsModal({
   font,
   savedCount,
   loading,
+  activeNitterInstance,
+  nitterInstances,
+  checkingNitterHealth,
+  switchingNitterInstance,
   onChangeSort,
   onChangeTimeframe,
   onChangeSourceFilter,
   onChangeDensity,
   onChangeTheme,
   onChangeFont,
+  onRefreshNitterHealth,
+  onSelectNitterInstance,
   onRefreshFeed,
   onClearCache,
   onClearSaved,
@@ -437,6 +469,150 @@ export function SettingsModal({
               setOpenMenu(null);
             }}
           />
+
+          {/* Nitter Instance Health & Switcher Row */}
+          {(() => {
+            const activeRec =
+              nitterInstances.find((i) => i.url === activeNitterInstance) ||
+              nitterInstances.find((i) => i.isActive) ||
+              nitterInstances[0] ||
+              null;
+            const healthyCount = nitterInstances.filter((i) => i.status === 'healthy').length;
+            const summaryText = checkingNitterHealth
+              ? 'Checking instances...'
+              : nitterInstances.length > 0
+                ? `${healthyCount}/${nitterInstances.length} healthy`
+                : 'Auto-monitored X mirror';
+
+            return (
+              <div className="py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4">
+                <div className="min-w-0">
+                  <div className="text-[12.5px] font-medium text-[var(--sf-text)]">
+                    Nitter Instance
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-[var(--sf-text-muted)] truncate">
+                    {summaryText}
+                  </p>
+                </div>
+
+                <div
+                  data-settings-dropdown="nitter"
+                  className="relative shrink-0 w-full sm:w-[206px] flex items-center gap-1.5"
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleMenu('nitter')}
+                    disabled={switchingNitterInstance}
+                    aria-haspopup="listbox"
+                    aria-expanded={openMenu === 'nitter'}
+                    aria-label="Nitter Instance"
+                    className={`flex-1 min-w-0 flex items-center justify-between gap-2 px-3 py-1.5 text-[12px] rounded-md border transition-colors bg-[var(--sf-surface)] text-[var(--sf-text)] glass:backdrop-blur-md disabled:opacity-60 ${
+                      openMenu === 'nitter'
+                        ? 'border-[var(--sf-border-strong)]'
+                        : 'border-[var(--sf-border)] hover:border-[var(--sf-border-strong)]'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2 min-w-0 truncate">
+                      <span
+                        className={`w-2 h-2 rounded-full shrink-0 ${
+                          activeRec ? getHealthDotClass(activeRec.status) : 'bg-zinc-400'
+                        }`}
+                        aria-hidden="true"
+                      />
+                      <span className="truncate font-mono text-[11.5px]">
+                        {switchingNitterInstance
+                          ? 'Switching...'
+                          : activeRec?.host || 'Auto'}
+                      </span>
+                    </span>
+                    <ChevronDown
+                      className={`w-3.5 h-3.5 shrink-0 text-[var(--sf-text-muted)] transition-transform duration-150 ${
+                        openMenu === 'nitter' ? 'rotate-180' : ''
+                      }`}
+                    />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={onRefreshNitterHealth}
+                    disabled={checkingNitterHealth}
+                    title="Re-check Nitter instance health"
+                    aria-label="Re-check Nitter instance health"
+                    className="p-1.5 rounded-md border border-[var(--sf-border)] bg-[var(--sf-surface)] text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] hover:border-[var(--sf-border-strong)] transition-colors disabled:opacity-50 shrink-0"
+                  >
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 ${checkingNitterHealth ? 'animate-spin' : ''}`}
+                    />
+                  </button>
+
+                  <AnimatePresence>
+                    {openMenu === 'nitter' && (
+                      <motion.ul
+                        role="listbox"
+                        aria-label="Nitter instances"
+                        initial={{ opacity: 0, y: 4, scale: 0.98 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 4, scale: 0.98 }}
+                        transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
+                        className="absolute right-0 bottom-full mb-1.5 z-30 w-full min-w-[230px] py-1 rounded-lg border border-[var(--sf-border)] bg-[var(--sf-surface-elevated)] shadow-xl max-h-60 overflow-y-auto glass:backdrop-blur-2xl glass:shadow-[0_16px_44px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.14)]"
+                      >
+                        {nitterInstances.length === 0 ? (
+                          <li className="px-3 py-2 text-[11.5px] text-[var(--sf-text-muted)]">
+                            {checkingNitterHealth ? 'Probing instances...' : 'No instances loaded'}
+                          </li>
+                        ) : (
+                          nitterInstances.map((inst) => {
+                            const active = inst.url === activeRec?.url;
+                            return (
+                              <li key={inst.url} role="option" aria-selected={active}>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onSelectNitterInstance(inst.url);
+                                    setOpenMenu(null);
+                                  }}
+                                  className={`w-full flex items-center justify-between gap-2 px-3 py-1.5 text-[11.5px] transition-colors text-left ${
+                                    active
+                                      ? 'bg-[var(--sf-active)] text-[var(--sf-text)] font-medium'
+                                      : 'text-[var(--sf-text-secondary)] hover:bg-[var(--sf-hover)] hover:text-[var(--sf-text)]'
+                                  }`}
+                                >
+                                  <span className="flex items-center gap-2 min-w-0 truncate">
+                                    <span
+                                      className={`w-2 h-2 rounded-full shrink-0 ${getHealthDotClass(
+                                        inst.status
+                                      )}`}
+                                      aria-hidden="true"
+                                    />
+                                    <span className="truncate font-mono">{inst.host}</span>
+                                  </span>
+
+                                  <span className="flex items-center gap-1.5 shrink-0">
+                                    <span
+                                      className={`text-[10.5px] tabular-nums ${
+                                        inst.status === 'down'
+                                          ? 'text-red-500 dark:text-red-400 mocha:text-[#f38ba8]'
+                                          : 'text-[var(--sf-text-muted)]'
+                                      }`}
+                                    >
+                                      {getHealthMetaLabel(inst)}
+                                    </span>
+                                    {active && (
+                                      <Check className="w-3.5 h-3.5 text-[var(--sf-accent)]" />
+                                    )}
+                                  </span>
+                                </button>
+                              </li>
+                            );
+                          })
+                        )}
+                      </motion.ul>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         {/* Feed Data Footer */}

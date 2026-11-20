@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
-import { PanelLeft, Search, User as UserIcon, X } from 'lucide-react';
+import { Check, PanelLeft, RefreshCw, Search, Server, User as UserIcon, X } from 'lucide-react';
 import type {
   ActiveView,
   FeedDensity,
   FontOption,
+  NitterInstanceHealth,
   RedditPost,
   SortOption,
   SourceFilter,
@@ -22,11 +23,14 @@ import {
 import {
   DEFAULT_X_ACCOUNTS,
   DEFAULT_X_TOPICS,
+  XFeedError,
+  fetchNitterInstances,
   fetchXFeed,
   getCachedXFeed,
   mergeAndRankFeeds,
   sanitizeXHandle,
   sanitizeXTopic,
+  switchNitterInstance,
 } from './lib/x';
 import { cacheClearAll } from './lib/cache';
 import {
@@ -248,7 +252,14 @@ export default function App() {
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorIsNitter, setErrorIsNitter] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
+
+  const [activeNitterInstance, setActiveNitterInstance] = useState<string | null>(null);
+  const [nitterInstances, setNitterInstances] = useState<NitterInstanceHealth[]>([]);
+  const [checkingNitterHealth, setCheckingNitterHealth] = useState(false);
+  const [switchingNitterInstance, setSwitchingNitterInstance] = useState(false);
+  const [showErrorInstances, setShowErrorInstances] = useState(false);
 
   const [selectedPost, setSelectedPost] = useState<RedditPost | null>(null);
   const [focusedIndex, setFocusedIndex] = useState<number>(-1);
@@ -612,7 +623,7 @@ export default function App() {
           forceRefresh: isManualRefresh,
           signal: controller.signal,
         })
-      : Promise.resolve({ posts: [], after: null });
+      : Promise.resolve({ posts: [] as RedditPost[], after: null, instance: null as string | null });
 
     Promise.allSettled([redditPromise, xPromise])
       .then(([redditRes, xRes]) => {
@@ -620,13 +631,20 @@ export default function App() {
 
         const redditOk = redditRes.status === 'fulfilled';
         const xOk = xRes.status === 'fulfilled';
+        const xFailedReason = xRes.status === 'rejected' ? xRes.reason : null;
+        const isXError =
+          xFailedReason instanceof XFeedError ||
+          activeView.type === 'x' ||
+          activeView.type === 'topic' ||
+          (activeView.type === 'all' && sourceFilter === 'x');
 
         if (!redditOk && !xOk) {
           const msg =
+            (xFailedReason instanceof Error && xFailedReason.message) ||
             (redditRes.reason instanceof Error && redditRes.reason.message) ||
-            (xRes.reason instanceof Error && xRes.reason.message) ||
             'Unable to load posts.';
           setError(msg);
+          setErrorIsNitter(isXError);
           setPosts([]);
           setAfterCursor(null);
           return;
@@ -638,21 +656,27 @@ export default function App() {
               ? redditRes.reason.message
               : 'Unable to load subreddit.'
           );
+          setErrorIsNitter(false);
           setPosts([]);
           setAfterCursor(null);
           return;
         }
         if ((activeView.type === 'x' || activeView.type === 'topic') && !xOk) {
           setError(
-            xRes.reason instanceof Error
-              ? xRes.reason.message
+            xFailedReason instanceof Error
+              ? xFailedReason.message
               : activeView.type === 'topic'
                 ? 'Unable to load X topic via Nitter.'
                 : 'Unable to load X account via Nitter.'
           );
+          setErrorIsNitter(true);
           setPosts([]);
           setAfterCursor(null);
           return;
+        }
+
+        if (xOk && xRes.value.instance) {
+          setActiveNitterInstance(xRes.value.instance);
         }
 
         const redditPosts = redditOk ? redditRes.value.posts : [];
@@ -660,6 +684,8 @@ export default function App() {
         const merged = mergeAndRankFeeds(redditPosts, xPosts, sort);
 
         setError(null);
+        setErrorIsNitter(false);
+        setShowErrorInstances(false);
         setPosts(merged);
         setAfterCursor(redditOk ? redditRes.value.after : null);
         feedScrollRef.current?.scrollTo({ top: 0 });
@@ -673,6 +699,57 @@ export default function App() {
 
     return () => controller.abort();
   }, [activeView, activeSubreddits, activeXHandles, activeXTopics, sort, timeframe, refreshNonce]);
+
+  const loadNitterHealth = useCallback(async (forceRefresh = false) => {
+    setCheckingNitterHealth(true);
+    try {
+      const snap = await fetchNitterInstances(forceRefresh);
+      setNitterInstances(snap.instances);
+      setActiveNitterInstance(snap.activeInstance);
+    } catch {
+      // Keep previous list if health endpoint temporarily fails
+    } finally {
+      setCheckingNitterHealth(false);
+    }
+  }, []);
+
+  const handleSwitchNitterInstance = useCallback(
+    async (targetUrl?: string) => {
+      setSwitchingNitterInstance(true);
+      try {
+        const switched = await switchNitterInstance(targetUrl ?? null);
+        setNitterInstances(switched.instances);
+        setActiveNitterInstance(switched.activeInstance);
+        setError(null);
+        setErrorIsNitter(false);
+        setShowErrorInstances(false);
+        setRefreshNonce((n) => n + 1);
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Could not switch Nitter instance. Please retry.'
+        );
+        setErrorIsNitter(true);
+      } finally {
+        setSwitchingNitterInstance(false);
+      }
+    },
+    []
+  );
+
+  // Refresh Nitter instance health when opening Settings or entering a Nitter error state
+  useEffect(() => {
+    if (showSettings && nitterInstances.length === 0 && !checkingNitterHealth) {
+      void loadNitterHealth(false);
+    }
+  }, [showSettings, nitterInstances.length, checkingNitterHealth, loadNitterHealth]);
+
+  useEffect(() => {
+    if (error && errorIsNitter) {
+      void loadNitterHealth(false);
+    }
+  }, [error, errorIsNitter, loadNitterHealth]);
 
   const handlePullRefresh = useCallback(() => {
     pendingPullRefreshRef.current = true;
@@ -1312,7 +1389,7 @@ export default function App() {
                 </div>
               )
             ) : error ? (
-              /* Honest Actionable Error State */
+              /* Honest Actionable Error State with Nitter Instance Recovery */
               <div className="px-6 py-20 max-w-md mx-auto text-center">
                 <p className="text-[14px] font-medium text-[var(--sf-text)]">
                   Could not load feed
@@ -1320,11 +1397,36 @@ export default function App() {
                 <p className="mt-2 text-[12.5px] leading-relaxed text-[var(--sf-text-muted)]">
                   {error}
                 </p>
-                <div className="mt-5 flex items-center justify-center gap-3">
+                <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
+                  {(errorIsNitter ||
+                    activeView.type === 'x' ||
+                    activeView.type === 'topic' ||
+                    (activeView.type === 'all' && sourceFilter === 'x')) && (
+                    <button
+                      type="button"
+                      disabled={switchingNitterInstance}
+                      onClick={() => void handleSwitchNitterInstance()}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 text-[12.5px] font-medium bg-[var(--sf-btn-active-bg)] text-[var(--sf-btn-active-text)] rounded-md hover:opacity-90 transition-opacity disabled:opacity-60"
+                    >
+                      <RefreshCw
+                        className={`w-3.5 h-3.5 ${switchingNitterInstance ? 'animate-spin' : ''}`}
+                      />
+                      <span>
+                        {switchingNitterInstance ? 'Switching...' : 'Switch instance'}
+                      </span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => setRefreshNonce((n) => n + 1)}
-                    className="px-4 py-2 text-[12.5px] font-medium bg-[var(--sf-btn-active-bg)] text-[var(--sf-btn-active-text)] rounded-md hover:opacity-90 transition-opacity"
+                    className={`px-4 py-2 text-[12.5px] font-medium rounded-md transition-colors ${
+                      errorIsNitter ||
+                      activeView.type === 'x' ||
+                      activeView.type === 'topic' ||
+                      (activeView.type === 'all' && sourceFilter === 'x')
+                        ? 'text-[var(--sf-text-secondary)] border border-[var(--sf-border)] hover:text-[var(--sf-text)] hover:border-[var(--sf-border-strong)]'
+                        : 'bg-[var(--sf-btn-active-bg)] text-[var(--sf-btn-active-text)] hover:opacity-90'
+                    }`}
                   >
                     Retry
                   </button>
@@ -1356,6 +1458,105 @@ export default function App() {
                     </button>
                   )}
                 </div>
+
+                {(errorIsNitter ||
+                  activeView.type === 'x' ||
+                  activeView.type === 'topic' ||
+                  (activeView.type === 'all' && sourceFilter === 'x')) && (
+                  <div className="mt-5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = !showErrorInstances;
+                        setShowErrorInstances(next);
+                        if (next) void loadNitterHealth(true);
+                      }}
+                      className="inline-flex items-center gap-1.5 text-[11.5px] text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] transition-colors"
+                    >
+                      <Server className="w-3.5 h-3.5" />
+                      <span>
+                        {showErrorInstances
+                          ? 'Hide Nitter instances'
+                          : 'Choose a specific Nitter instance'}
+                      </span>
+                    </button>
+
+                    {showErrorInstances && (
+                      <div className="mt-3 text-left rounded-lg border border-[var(--sf-border)] bg-[var(--sf-surface)] divide-y divide-[var(--sf-border-subtle)] overflow-hidden">
+                        <div className="px-3 py-2 flex items-center justify-between text-[11px] text-[var(--sf-text-muted)]">
+                          <span>Monitored instances</span>
+                          <button
+                            type="button"
+                            onClick={() => void loadNitterHealth(true)}
+                            disabled={checkingNitterHealth}
+                            className="inline-flex items-center gap-1 hover:text-[var(--sf-text)] disabled:opacity-50"
+                          >
+                            <RefreshCw
+                              className={`w-3 h-3 ${checkingNitterHealth ? 'animate-spin' : ''}`}
+                            />
+                            <span>Re-check</span>
+                          </button>
+                        </div>
+                        {nitterInstances.length === 0 ? (
+                          <div className="px-3 py-3 text-[12px] text-[var(--sf-text-muted)] text-center">
+                            {checkingNitterHealth
+                              ? 'Probing Nitter instances...'
+                              : 'No instances discovered yet.'}
+                          </div>
+                        ) : (
+                          nitterInstances.map((inst) => {
+                            const dotClass =
+                              inst.status === 'healthy'
+                                ? 'bg-emerald-500'
+                                : inst.status === 'degraded'
+                                  ? 'bg-amber-400'
+                                  : inst.status === 'down'
+                                    ? 'bg-red-500'
+                                    : 'bg-zinc-400';
+                            const isCurrent = inst.url === activeNitterInstance;
+                            return (
+                              <button
+                                key={inst.url}
+                                type="button"
+                                disabled={switchingNitterInstance}
+                                onClick={() => void handleSwitchNitterInstance(inst.url)}
+                                className="w-full px-3 py-2 flex items-center justify-between gap-2 text-[12px] hover:bg-[var(--sf-hover)] transition-colors text-left disabled:opacity-50"
+                              >
+                                <span className="flex items-center gap-2 min-w-0 truncate">
+                                  <span
+                                    className={`w-2 h-2 rounded-full shrink-0 ${dotClass}`}
+                                    aria-hidden="true"
+                                  />
+                                  <span className="truncate font-mono text-[11.5px] text-[var(--sf-text)]">
+                                    {inst.host}
+                                  </span>
+                                </span>
+                                <span className="flex items-center gap-2 shrink-0 text-[11px] tabular-nums">
+                                  <span
+                                    className={
+                                      inst.status === 'down'
+                                        ? 'text-red-500 dark:text-red-400 mocha:text-[#f38ba8]'
+                                        : 'text-[var(--sf-text-muted)]'
+                                    }
+                                  >
+                                    {inst.status === 'down'
+                                      ? 'Down'
+                                      : inst.latencyMs != null
+                                        ? `${inst.latencyMs}ms`
+                                        : inst.status}
+                                  </span>
+                                  {isCurrent && (
+                                    <Check className="w-3.5 h-3.5 text-[var(--sf-accent)]" />
+                                  )}
+                                </span>
+                              </button>
+                            );
+                          })
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ) : visiblePosts.length === 0 ? (
               /* Empty Filter or Empty Saved State */
@@ -1373,12 +1574,12 @@ export default function App() {
                     : activeView.type === 'saved'
                       ? 'Bookmark any post from your feed to keep it here for later reading.'
                       : activeView.type === 'x'
-                        ? `Nitter returned no recent posts for @${activeView.handle}. Try refreshing or check that the account is public.`
+                        ? `Nitter returned no recent posts for @${activeView.handle}. Try switching instances or check that the account is public.`
                         : activeView.type === 'topic'
-                          ? `Nitter returned no recent posts for #${activeView.topic}. Try refreshing or following a broader keyword.`
+                          ? `Nitter returned no recent posts for #${activeView.topic}. Try switching instances or following a broader keyword.`
                           : 'Try adjusting the sort order or timeframe in Settings.'}
                 </p>
-                {filterQuery && (
+                {filterQuery ? (
                   <button
                     type="button"
                     onClick={() => setFilterQuery('')}
@@ -1386,6 +1587,29 @@ export default function App() {
                   >
                     Clear search
                   </button>
+                ) : (activeView.type === 'x' || activeView.type === 'topic') && (
+                  <div className="mt-5 flex items-center justify-center gap-2.5">
+                    <button
+                      type="button"
+                      disabled={switchingNitterInstance}
+                      onClick={() => void handleSwitchNitterInstance()}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[12px] font-medium bg-[var(--sf-btn-active-bg)] text-[var(--sf-btn-active-text)] rounded-md hover:opacity-90 transition-opacity disabled:opacity-60"
+                    >
+                      <RefreshCw
+                        className={`w-3.5 h-3.5 ${switchingNitterInstance ? 'animate-spin' : ''}`}
+                      />
+                      <span>
+                        {switchingNitterInstance ? 'Switching...' : 'Switch instance'}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRefreshNonce((n) => n + 1)}
+                      className="px-3.5 py-1.5 text-[12px] font-medium border border-[var(--sf-border)] rounded-md text-[var(--sf-text-secondary)] hover:text-[var(--sf-text)] hover:border-[var(--sf-border-strong)] transition-colors"
+                    >
+                      Retry
+                    </button>
+                  </div>
                 )}
               </div>
             ) : (
@@ -1458,10 +1682,12 @@ export default function App() {
       <ThreadDrawer
         post={selectedPost}
         isSaved={selectedPost ? savedIdSet.has(selectedPost.id) : false}
+        switchingInstance={switchingNitterInstance}
         onClose={() => setSelectedPost(null)}
         onToggleSave={handleToggleSave}
         onSelectSubreddit={handleSelectSubredditFromPost}
         onSelectXAccount={handleSelectXAccountFromPost}
+        onSwitchNitterInstance={() => handleSwitchNitterInstance()}
       />
 
       {/* Settings Modal */}
@@ -1475,12 +1701,18 @@ export default function App() {
         font={font}
         savedCount={savedPosts.length}
         loading={loading || pullRefreshing}
+        activeNitterInstance={activeNitterInstance}
+        nitterInstances={nitterInstances}
+        checkingNitterHealth={checkingNitterHealth}
+        switchingNitterInstance={switchingNitterInstance}
         onChangeSort={setSort}
         onChangeTimeframe={setTimeframe}
         onChangeSourceFilter={setSourceFilter}
         onChangeDensity={setDensity}
         onChangeTheme={setTheme}
         onChangeFont={setFont}
+        onRefreshNitterHealth={() => void loadNitterHealth(true)}
+        onSelectNitterInstance={(url) => void handleSwitchNitterInstance(url)}
         onRefreshFeed={() => setRefreshNonce((n) => n + 1)}
         onClearCache={() => {
           cacheClearAll();

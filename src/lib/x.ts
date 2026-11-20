@@ -1,16 +1,82 @@
 import type {
   FeedResponse,
+  NitterInstancesResponse,
   RedditComment,
   RedditPost,
   SortOption,
   TimeframeOption,
   XProfilePreview,
 } from '../types/reddit';
-import { cacheDelete, cacheGet, cacheSet } from './cache';
+import { cacheClearAll, cacheDelete, cacheGet, cacheSet } from './cache';
 
 const X_FEED_CACHE_TTL_MS = 5 * 60 * 1000;
 const X_TWEET_CACHE_TTL_MS = 5 * 60 * 1000;
 const X_PROFILE_CACHE_TTL_MS = 10 * 60 * 1000;
+const NITTER_INSTANCE_STORAGE_KEY = 'subfeed:nitterInstance';
+
+export class XFeedError extends Error {
+  isNitterError: boolean;
+  failedInstance: string | null;
+
+  constructor(message: string, failedInstance: string | null = null) {
+    super(message);
+    this.name = 'XFeedError';
+    this.isNitterError = true;
+    this.failedInstance = failedInstance;
+  }
+}
+
+export function getPreferredNitterInstance(): string | null {
+  try {
+    const val = localStorage.getItem(NITTER_INSTANCE_STORAGE_KEY);
+    return val && val.trim() ? val.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setPreferredNitterInstance(instanceUrl: string | null): void {
+  try {
+    if (instanceUrl && instanceUrl.trim()) {
+      localStorage.setItem(NITTER_INSTANCE_STORAGE_KEY, instanceUrl.trim());
+    } else {
+      localStorage.removeItem(NITTER_INSTANCE_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+export async function fetchNitterInstances(
+  forceRefresh = false,
+  signal?: AbortSignal
+): Promise<NitterInstancesResponse> {
+  const qs = forceRefresh ? '?refresh=1' : '';
+  const res = await fetchWithTimeout(`/api/x/instances${qs}`, 12_000, signal);
+  if (!res.ok) {
+    throw new Error('Unable to check Nitter instance health.');
+  }
+  return (await res.json()) as NitterInstancesResponse;
+}
+
+export async function switchNitterInstance(
+  targetInstance?: string | null
+): Promise<NitterInstancesResponse> {
+  const res = await fetch('/api/x/instances/switch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(targetInstance ? { instance: targetInstance } : {}),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(body.error || 'Unable to switch Nitter instance.');
+  }
+  const data = body as NitterInstancesResponse;
+  // Persist explicit manual selection; clear pin when auto-switching so server health routing stays fresh
+  setPreferredNitterInstance(targetInstance ? data.activeInstance : null);
+  cacheClearAll();
+  return data;
+}
 
 export const DEFAULT_X_ACCOUNTS = ['vercel', 'github'];
 export const DEFAULT_X_TOPICS = ['AI', 'webdev'];
@@ -131,11 +197,25 @@ export async function fetchXFeed(params: {
   if (cleanHandles.length > 0) qs.set('handles', cleanHandles.join(','));
   if (cleanTopics.length > 0) qs.set('topics', cleanTopics.join(','));
   if (forceRefresh) qs.set('refresh', '1');
+  const preferredInstance = getPreferredNitterInstance();
+  if (preferredInstance) qs.set('instance', preferredInstance);
 
-  const res = await fetchWithTimeout(`/api/x/feed?${qs.toString()}`, 14_000, signal);
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(`/api/x/feed?${qs.toString()}`, 16_000, signal);
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    throw new XFeedError(
+      'Request to Nitter timed out or failed. Try switching to another instance.',
+      preferredInstance
+    );
+  }
   if (!res.ok) {
     const errBody = await res.json().catch(() => ({}));
-    throw new Error(errBody.error || `Unable to load X posts (HTTP ${res.status}).`);
+    throw new XFeedError(
+      errBody.error || `Unable to load X posts via Nitter (HTTP ${res.status}).`,
+      errBody.failedInstance ?? preferredInstance
+    );
   }
 
   const data = (await res.json()) as FeedResponse;
@@ -143,8 +223,11 @@ export async function fetchXFeed(params: {
     posts: Array.isArray(data.posts) ? data.posts : [],
     after: null,
     source: data.source || 'nitter',
+    instance: data.instance ?? null,
   };
-  cacheSet(cacheKey, result, X_FEED_CACHE_TTL_MS);
+  if (result.posts.length > 0) {
+    cacheSet(cacheKey, result, X_FEED_CACHE_TTL_MS);
+  }
   return result;
 }
 
@@ -170,10 +253,12 @@ export async function fetchXTweet(params: {
     id: cleanId,
   });
   if (forceRefresh) qs.set('refresh', '1');
+  const preferredInstance = getPreferredNitterInstance();
+  if (preferredInstance) qs.set('instance', preferredInstance);
 
   const res = await fetchWithTimeout(`/api/x/tweet?${qs.toString()}`, 12_000, signal);
   if (!res.ok) {
-    throw new Error('Could not load replies for this X post.');
+    throw new XFeedError('Could not load replies for this X post via Nitter.', preferredInstance);
   }
 
   const data = (await res.json()) as { comments: RedditComment[]; post?: RedditPost };

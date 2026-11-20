@@ -10,6 +10,7 @@ import {
   Heart,
   Minus,
   Plus,
+  RefreshCw,
   Repeat2,
   X,
 } from 'lucide-react';
@@ -29,10 +30,12 @@ import { MarkdownText } from './MarkdownText';
 interface ThreadDrawerProps {
   post: RedditPost | null;
   isSaved: boolean;
+  switchingInstance?: boolean;
   onClose: () => void;
   onToggleSave: (post: RedditPost) => void;
   onSelectSubreddit: (name: string) => void;
   onSelectXAccount: (handle: string) => void;
+  onSwitchNitterInstance?: () => Promise<void>;
 }
 
 const COMMENT_SORTS: { value: CommentSortOption; label: string }[] = [
@@ -99,16 +102,19 @@ function CommentNode({ comment, isX }: { comment: RedditComment; isX: boolean })
 export function ThreadDrawer({
   post,
   isSaved,
+  switchingInstance = false,
   onClose,
   onToggleSave,
   onSelectSubreddit,
   onSelectXAccount,
+  onSwitchNitterInstance,
 }: ThreadDrawerProps) {
   const [commentSort, setCommentSort] = useState<CommentSortOption>('best');
   const [comments, setComments] = useState<RedditComment[]>([]);
   const [resolvedPost, setResolvedPost] = useState<RedditPost | null>(post);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reloadNonce, setReloadNonce] = useState(0);
   const [galleryIndex, setGalleryIndex] = useState(0);
   const [imageError, setImageError] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -145,6 +151,7 @@ export function ThreadDrawer({
         ? fetchXTweet({
             handle: post.author,
             postId: post.id,
+            forceRefresh: reloadNonce > 0,
             signal: controller.signal,
           })
         : fetchPostComments({
@@ -171,7 +178,7 @@ export function ThreadDrawer({
       });
 
     return () => controller.abort();
-  }, [post?.id, post?.permalink, post?.source, post?.author, commentSort]);
+  }, [post?.id, post?.permalink, post?.source, post?.author, commentSort, reloadNonce]);
 
   const activePost = post ? resolvedPost || post : null;
   const isX = activePost?.source === 'x';
@@ -505,15 +512,31 @@ export function ThreadDrawer({
             ) : error ? (
               <div className="py-8 text-center">
                 <p className="text-[13px] text-[var(--sf-text-muted)]">{error}</p>
-                <a
-                  href={externalPostUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="mt-3 inline-flex items-center gap-1.5 text-[12.5px] text-[var(--sf-accent)] hover:underline underline-offset-4"
-                >
-                  <span>Read discussion on {isX ? 'X' : 'Reddit'}</span>
-                  <ArrowUpRight className="w-3.5 h-3.5" />
-                </a>
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
+                  {isX && onSwitchNitterInstance && (
+                    <button
+                      type="button"
+                      disabled={switchingInstance}
+                      onClick={async () => {
+                        await onSwitchNitterInstance();
+                        setReloadNonce((n) => n + 1);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[12px] font-medium bg-[var(--sf-btn-active-bg)] text-[var(--sf-btn-active-text)] rounded-md hover:opacity-90 transition-opacity disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${switchingInstance ? 'animate-spin' : ''}`} />
+                      <span>{switchingInstance ? 'Switching...' : 'Switch instance'}</span>
+                    </button>
+                  )}
+                  <a
+                    href={externalPostUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] text-[var(--sf-accent)] hover:underline underline-offset-4"
+                  >
+                    <span>Read discussion on {isX ? 'X' : 'Reddit'}</span>
+                    <ArrowUpRight className="w-3.5 h-3.5" />
+                  </a>
+                </div>
               </div>
             ) : comments.length === 0 ? (
               <div className="py-8 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-[12.5px] text-[var(--sf-text-muted)]">

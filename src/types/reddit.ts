@@ -100,8 +100,33 @@ export interface SubredditItem {
   addedAt: number;
 }
 
+export type NitterInstanceStatus = 'healthy' | 'degraded' | 'down' | 'unknown';
+
+export interface NitterInstanceHealth {
+  url: string;
+  host: string;
+  status: NitterInstanceStatus;
+  latencyMs: number | null;
+  rssOk: boolean;
+  searchOk: boolean;
+  lastCheckedAt: number | null;
+  lastError: string | null;
+  consecutiveFailures: number;
+  successCount: number;
+  failureCount: number;
+  isActive: boolean;
+}
+
+export interface NitterInstancesResponse {
+  activeInstance: string;
+  previousInstance?: string;
+  instances: NitterInstanceHealth[];
+  lastCheckedAt: number | null;
+}
+
 export interface FeedResponse {
   posts: RedditPost[];
   after: string | null;
   source?: string;
+  instance?: string | null;
 }

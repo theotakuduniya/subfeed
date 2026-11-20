@@ -3,11 +3,16 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import {
+  NitterConnectionError,
   fetchXFeed,
   fetchXProfile,
   fetchXTweetDetails,
+  getNitterInstancesSnapshot,
+  runNitterHealthChecks,
   sanitizeXHandle,
   sanitizeXTopic,
+  startNitterHealthMonitor,
+  switchNitterInstance,
 } from './server/xFetcher.ts';
 import { registerUserRoutes } from './server/userRoutes.ts';
 
@@ -483,6 +488,9 @@ async function createServer() {
   // Google OAuth + Prisma PostgreSQL user persistence endpoints
   registerUserRoutes(app);
 
+  // Start periodic Nitter instance health check monitoring
+  startNitterHealthMonitor();
+
   // GET /api/reddit/feed?subreddits=programming+design&sort=best&t=day&after=...
   app.get('/api/reddit/feed', async (req, res) => {
     try {
@@ -753,7 +761,42 @@ async function createServer() {
     return res.status(404).json({ error: `Subreddit r/${name} not found.` });
   });
 
-  // GET /api/x/feed?handles=vercel,github&topics=AI,webdev&sort=best&t=day&refresh=0
+  // GET /api/x/instances?refresh=1 — Live Nitter instance health snapshot
+  app.get('/api/x/instances', async (req, res) => {
+    try {
+      const forceRefresh = req.query.refresh === '1';
+      if (forceRefresh) {
+        await runNitterHealthChecks(true);
+      } else {
+        const current = getNitterInstancesSnapshot();
+        if (!current.lastCheckedAt) {
+          await runNitterHealthChecks(false);
+        }
+      }
+      return res.json(getNitterInstancesSnapshot());
+    } catch (err) {
+      console.error('Nitter instances health error:', err);
+      return res.status(500).json({ error: 'Unable to check Nitter instance health.' });
+    }
+  });
+
+  // POST /api/x/instances/switch — Switch to a specific verified instance or auto-failover to next healthy one
+  app.post('/api/x/instances/switch', async (req, res) => {
+    try {
+      const targetInstance =
+        typeof req.body?.instance === 'string' && req.body.instance.trim()
+          ? req.body.instance.trim()
+          : null;
+      const switched = await switchNitterInstance(targetInstance);
+      return res.json(switched);
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : 'Unable to switch Nitter instance.';
+      return res.status(400).json({ error: msg });
+    }
+  });
+
+  // GET /api/x/feed?handles=vercel,github&topics=AI,webdev&sort=best&t=day&refresh=0&instance=...
   app.get('/api/x/feed', async (req, res) => {
     try {
       const rawHandles = String(req.query.handles || '').trim();
@@ -762,6 +805,7 @@ async function createServer() {
       const timeframe = String(req.query.t || 'day').toLowerCase();
       const limit = Math.min(50, Math.max(10, Number(req.query.limit) || 25));
       const forceRefresh = req.query.refresh === '1';
+      const preferredInstance = String(req.query.instance || '').trim() || null;
 
       const handles = rawHandles
         .split(/[+,\s]+/)
@@ -784,30 +828,52 @@ async function createServer() {
         timeframe,
         limit,
         forceRefresh,
+        preferredInstance,
       });
       return res.json(data);
     } catch (err) {
+      if (err instanceof NitterConnectionError) {
+        const snapshot = getNitterInstancesSnapshot();
+        return res.status(502).json({
+          error: err.message,
+          code: err.code,
+          failedInstance: err.failedInstance,
+          activeInstance: snapshot.activeInstance,
+        });
+      }
       console.error('X feed error:', err);
-      return res.status(502).json({ error: 'Unable to load X posts via Nitter right now.' });
+      return res.status(502).json({
+        error: 'Unable to load X posts via Nitter right now.',
+        code: 'NITTER_UNAVAILABLE',
+      });
     }
   });
 
-  // GET /api/x/tweet?handle=vercel&id=12345
+  // GET /api/x/tweet?handle=vercel&id=12345&instance=...
   app.get('/api/x/tweet', async (req, res) => {
     try {
       const handle = sanitizeXHandle(String(req.query.handle || ''));
       const tweetId = String(req.query.id || '').trim();
       const forceRefresh = req.query.refresh === '1';
+      const preferredInstance = String(req.query.instance || '').trim() || null;
 
       if (!handle || !tweetId) {
         return res.status(400).json({ error: 'Missing handle or tweet id.' });
       }
 
-      const data = await fetchXTweetDetails({ handle, tweetId, forceRefresh });
+      const data = await fetchXTweetDetails({
+        handle,
+        tweetId,
+        forceRefresh,
+        preferredInstance,
+      });
       return res.json(data);
     } catch (err) {
       console.error('X tweet error:', err);
-      return res.status(502).json({ error: 'Failed to load X post details.' });
+      return res.status(502).json({
+        error: 'Failed to load X post details.',
+        code: 'NITTER_UNAVAILABLE',
+      });
     }
   });
 
