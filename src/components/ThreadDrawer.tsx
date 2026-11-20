@@ -1,5 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
+import {
+  AnimatePresence,
+  animate,
+  motion,
+  useMotionValue,
+  useTransform,
+} from 'motion/react';
 import {
   ArrowUp,
   ArrowUpRight,
@@ -118,6 +124,14 @@ export function ThreadDrawer({
   const [galleryIndex, setGalleryIndex] = useState(0);
   const [imageError, setImageError] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const sheetRef = useRef<HTMLDivElement | null>(null);
+  const headerRef = useRef<HTMLDivElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  // Smooth GPU-accelerated drag offset for mobile pull-down-to-close
+  const sheetY = useMotionValue(0);
+  const backdropOpacity = useTransform(sheetY, [0, 320], [1, 0.25]);
 
   useEffect(() => {
     if (post) {
@@ -125,11 +139,126 @@ export function ThreadDrawer({
       setGalleryIndex(0);
       setImageError(false);
       setError(null);
+      sheetY.set(0);
       if (scrollContainerRef.current) {
         scrollContainerRef.current.scrollTop = 0;
       }
     }
-  }, [post]);
+  }, [post, sheetY]);
+
+  // Small-screen pull-down gesture on the open post sheet to dismiss it
+  useEffect(() => {
+    if (!post) return;
+    const sheetEl = sheetRef.current;
+    if (!sheetEl) return;
+
+    let startY = 0;
+    let startX = 0;
+    let startTime = 0;
+    let eligible = false;
+    let dragging = false;
+    let currentDragY = 0;
+
+    const isSmallScreen = () => window.innerWidth < 768;
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (!isSmallScreen() || e.touches.length !== 1) {
+        eligible = false;
+        return;
+      }
+      const touch = e.touches[0];
+      const target = e.target as Node | null;
+      const inHeader = Boolean(headerRef.current && target && headerRef.current.contains(target));
+      const scrollTop = scrollContainerRef.current?.scrollTop ?? 0;
+
+      // Eligible if grabbing top handle/header, or when scrolled to top of post
+      if (inHeader || scrollTop <= 1) {
+        startY = touch.clientY;
+        startX = touch.clientX;
+        startTime = Date.now();
+        eligible = true;
+        dragging = false;
+        currentDragY = 0;
+      } else {
+        eligible = false;
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!eligible || e.touches.length !== 1) return;
+      const touch = e.touches[0];
+      const deltaY = touch.clientY - startY;
+      const deltaX = touch.clientX - startX;
+
+      if (!dragging) {
+        // Cancel gesture if swiping horizontally (e.g. gallery) or scrolling down into content
+        if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > 8) {
+          eligible = false;
+          return;
+        }
+        if (deltaY < -4) {
+          eligible = false;
+          return;
+        }
+        if (deltaY > 8) {
+          const target = e.target as Node | null;
+          const inHeader = Boolean(
+            headerRef.current && target && headerRef.current.contains(target)
+          );
+          const scrollTop = scrollContainerRef.current?.scrollTop ?? 0;
+          if (!inHeader && scrollTop > 1) {
+            eligible = false;
+            return;
+          }
+          dragging = true;
+        } else {
+          return;
+        }
+      }
+
+      if (dragging) {
+        e.preventDefault();
+        currentDragY = Math.max(0, deltaY);
+        sheetY.set(currentDragY);
+      }
+    };
+
+    const finishDrag = () => {
+      if (!dragging) {
+        eligible = false;
+        return;
+      }
+      dragging = false;
+      eligible = false;
+
+      const elapsed = Math.max(1, Date.now() - startTime);
+      const velocity = currentDragY / elapsed; // px per ms
+      const shouldClose = currentDragY > 110 || (currentDragY > 45 && velocity > 0.45);
+
+      if (shouldClose) {
+        onCloseRef.current();
+      } else {
+        animate(sheetY, 0, {
+          type: 'spring',
+          stiffness: 480,
+          damping: 38,
+        });
+      }
+      currentDragY = 0;
+    };
+
+    sheetEl.addEventListener('touchstart', handleTouchStart, { passive: true });
+    sheetEl.addEventListener('touchmove', handleTouchMove, { passive: false });
+    sheetEl.addEventListener('touchend', finishDrag, { passive: true });
+    sheetEl.addEventListener('touchcancel', finishDrag, { passive: true });
+
+    return () => {
+      sheetEl.removeEventListener('touchstart', handleTouchStart);
+      sheetEl.removeEventListener('touchmove', handleTouchMove);
+      sheetEl.removeEventListener('touchend', finishDrag);
+      sheetEl.removeEventListener('touchcancel', finishDrag);
+    };
+  }, [post, sheetY]);
 
   useEffect(() => {
     if (!post) return;
@@ -214,22 +343,40 @@ export function ThreadDrawer({
           aria-label={activePost.title}
         >
           {/* Backdrop */}
-          <div
+          <motion.div
+            style={{ opacity: backdropOpacity }}
             className="fixed inset-0 bg-black/55 dark:bg-black/75 backdrop-blur-[2px]"
             onClick={onClose}
             aria-hidden="true"
           />
 
-          {/* Dribbble-style Bottom Slide-Up Sheet */}
+          {/* Dribbble-style Bottom Slide-Up Sheet with Mobile Pull-Down Dismiss */}
           <motion.div
-            initial={{ y: '100%' }}
-            animate={{ y: 0 }}
-            exit={{ y: '100%' }}
-            transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
-            className="relative z-10 w-full max-w-[940px] h-full bg-[var(--sf-sheet)] border-t border-x border-[var(--sf-border)] rounded-t-2xl flex flex-col shadow-2xl overflow-hidden glass:backdrop-blur-2xl glass:shadow-[0_-16px_60px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.16)]"
+            ref={sheetRef}
+            style={{ y: sheetY }}
+            className="relative z-10 w-full max-w-[940px] h-full flex flex-col"
           >
-            {/* Sticky Sheet Header */}
-            <div className="h-14 px-3.5 sm:px-7 border-b border-[var(--sf-border)] flex items-center justify-between gap-2 sm:gap-4 shrink-0">
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+              className="w-full h-full bg-[var(--sf-sheet)] border-t border-x border-[var(--sf-border)] rounded-t-2xl flex flex-col shadow-2xl overflow-hidden glass:backdrop-blur-2xl glass:shadow-[0_-16px_60px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.16)]"
+            >
+              {/* Sticky Sheet Header & Mobile Pull Handle */}
+              <div
+                ref={headerRef}
+                className="border-b border-[var(--sf-border)] shrink-0 touch-none md:touch-auto"
+              >
+                {/* Mobile Pull-Down Grab Handle */}
+                <div
+                  className="md:hidden pt-2.5 pb-1 flex justify-center"
+                  aria-hidden="true"
+                >
+                  <span className="w-10 h-1 rounded-full bg-[var(--sf-border-strong)] opacity-75" />
+                </div>
+
+                <div className="h-12 md:h-14 px-3.5 sm:px-7 flex items-center justify-between gap-2 sm:gap-4">
               <div className="flex items-center gap-1.5 sm:gap-2 text-[12px] sm:text-[12.5px] text-[var(--sf-text-muted)] min-w-0">
                 {isX ? (
                   <>
@@ -309,13 +456,14 @@ export function ThreadDrawer({
                   <X className="w-4 h-4" />
                 </button>
               </div>
-            </div>
+                </div>
+              </div>
 
-            {/* Scrollable Thread Body */}
-            <div
-              ref={scrollContainerRef}
-              className="flex-1 overflow-y-auto px-4 sm:px-8 py-6 sm:py-7"
-            >
+              {/* Scrollable Thread Body */}
+              <div
+                ref={scrollContainerRef}
+                className="flex-1 overflow-y-auto overscroll-y-contain px-4 sm:px-8 py-6 sm:py-7"
+              >
               <div className="max-w-[740px] mx-auto w-full">
                 {/* Post Title & Stats */}
                 <header className="pb-5 border-b border-[var(--sf-border)]">
@@ -565,8 +713,9 @@ export function ThreadDrawer({
               </div>
             )}
           </section>
+                </div>
               </div>
-            </div>
+            </motion.div>
           </motion.div>
         </motion.div>
       )}
