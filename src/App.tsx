@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
-import { onAuthStateChanged, type User } from 'firebase/auth';
 import { PanelLeft, Search, User as UserIcon, X } from 'lucide-react';
 import type {
   ActiveView,
@@ -29,18 +28,19 @@ import {
 } from './lib/x';
 import { cacheClearAll } from './lib/cache';
 import {
-  auth,
-  clearAllSavedPostsFromCloud,
-  deleteSavedPostFromCloud,
-  ensureUserCloudProfile,
-  savePostToCloud,
-  signInWithGoogle,
-  signOutUser,
-  subscribeSavedPosts,
-  subscribeUserFeedState,
-  syncFeedsAndReadHistory,
-  syncUserPreferences,
-} from './lib/firebase';
+  bootstrapUserState,
+  clearAllSavedPostsFromServer,
+  clearReadHistoryOnServer,
+  deleteSavedPostFromServer,
+  fetchAuthStatus,
+  logoutAccount,
+  markPostReadOnServer,
+  savePostToServer,
+  startGoogleSignInPopup,
+  syncUserFeedsToServer,
+  syncUserPreferencesToServer,
+  type AuthUser,
+} from './lib/account';
 import { Sidebar } from './components/Sidebar';
 import { PostRow } from './components/PostRow';
 import { PostCard } from './components/PostCard';
@@ -211,7 +211,7 @@ export default function App() {
   const [font, setFont] = useState<FontOption>(readStoredFont);
   const [density, setDensity] = useState<FeedDensity>(readStoredDensity);
 
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [cloudReady, setCloudReady] = useState(false);
   const [cloudSyncing, setCloudSyncing] = useState(false);
@@ -272,39 +272,45 @@ export default function App() {
     sourceFilter,
   };
 
-  // Listen to Firebase Authentication state
+  // Check existing Google OAuth session cookie on load
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      setUser(firebaseUser);
-      setHeaderAvatarFailed(false);
-      setAuthReady(true);
-      if (!firebaseUser) {
-        setCloudReady(false);
-        setCloudSyncing(false);
-      }
-    });
-    return () => unsubscribe();
+    let active = true;
+    fetchAuthStatus()
+      .then((status) => {
+        if (!active) return;
+        setUser(status.user);
+        setHeaderAvatarFailed(false);
+        setAuthReady(true);
+      })
+      .catch(() => {
+        if (!active) return;
+        setAuthReady(true);
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
-  // Hydrate & subscribe to Firestore cloud data when authenticated
+  // Hydrate & merge user data with PostgreSQL via Prisma when authenticated
   useEffect(() => {
-    if (!authReady || !user) return;
+    if (!authReady || !user) {
+      setCloudReady(false);
+      setCloudSyncing(false);
+      return;
+    }
 
     let active = true;
-    let unsubUser: (() => void) | null = null;
-    let unsubSaved: (() => void) | null = null;
-
     setCloudReady(false);
     setCloudSyncing(true);
 
     const snapshot = latestLocalRef.current;
 
-    ensureUserCloudProfile(
-      user,
-      {
-        subreddits: snapshot.subreddits,
-        xAccounts: snapshot.xAccounts,
-        readPostIds: snapshot.readPostIds,
+    bootstrapUserState({
+      subreddits: snapshot.subreddits,
+      xAccounts: snapshot.xAccounts,
+      savedPosts: snapshot.savedPosts,
+      readPostIds: snapshot.readPostIds,
+      preferences: {
         theme: snapshot.theme,
         font: snapshot.font,
         density: snapshot.density,
@@ -312,53 +318,27 @@ export default function App() {
         timeframe: snapshot.timeframe,
         sourceFilter: snapshot.sourceFilter,
       },
-      snapshot.savedPosts
-    )
-      .then((initialCloud) => {
+    })
+      .then((cloudState) => {
         if (!active) return;
-
-        if (initialCloud) {
-          hydratingCloudRef.current = true;
-          setSubreddits(initialCloud.subreddits);
-          setXAccounts(initialCloud.xAccounts);
-          setReadPostIds(initialCloud.readPostIds);
-          setTheme(initialCloud.theme);
-          setFont(initialCloud.font);
-          setDensity(initialCloud.density);
-          setSort(initialCloud.sort);
-          setTimeframe(initialCloud.timeframe);
-          setSourceFilter(initialCloud.sourceFilter);
-          setTimeout(() => {
-            hydratingCloudRef.current = false;
-          }, 150);
-        }
-
-        unsubUser = subscribeUserFeedState(user.uid, (cloudState) => {
-          if (!active) return;
-          hydratingCloudRef.current = true;
-          setSubreddits(cloudState.subreddits);
-          setXAccounts(cloudState.xAccounts);
-          setReadPostIds(cloudState.readPostIds);
-          setTheme(cloudState.theme);
-          setFont(cloudState.font);
-          setDensity(cloudState.density);
-          setSort(cloudState.sort);
-          setTimeframe(cloudState.timeframe);
-          setSourceFilter(cloudState.sourceFilter);
-          setTimeout(() => {
-            hydratingCloudRef.current = false;
-          }, 150);
-        });
-
-        unsubSaved = subscribeSavedPosts(user.uid, (cloudSaved) => {
-          if (!active) return;
-          setSavedPosts(cloudSaved);
-        });
-
+        hydratingCloudRef.current = true;
+        setSubreddits(cloudState.subreddits);
+        setXAccounts(cloudState.xAccounts);
+        setSavedPosts(cloudState.savedPosts);
+        setReadPostIds(cloudState.readPostIds);
+        setTheme(cloudState.preferences.theme);
+        setFont(cloudState.preferences.font);
+        setDensity(cloudState.preferences.density);
+        setSort(cloudState.preferences.sort);
+        setTimeframe(cloudState.preferences.timeframe);
+        setSourceFilter(cloudState.preferences.sourceFilter);
+        setTimeout(() => {
+          hydratingCloudRef.current = false;
+        }, 150);
         setCloudReady(true);
       })
       .catch((err) => {
-        console.error('Failed to initialize cloud profile:', err);
+        console.error('Failed to sync account state with PostgreSQL:', err);
       })
       .finally(() => {
         if (active) setCloudSyncing(false);
@@ -366,10 +346,8 @@ export default function App() {
 
     return () => {
       active = false;
-      if (unsubUser) unsubUser();
-      if (unsubSaved) unsubSaved();
     };
-  }, [authReady, user]);
+  }, [authReady, user?.id]);
 
   // Sync preferences to document root & localStorage
   useEffect(() => {
@@ -468,26 +446,25 @@ export default function App() {
     }
   }, [sourceFilter]);
 
-  // Sync followed feeds & read history to Firestore when signed in
+  // Sync followed feeds to PostgreSQL when signed in
   useEffect(() => {
     if (!user || !cloudReady || hydratingCloudRef.current) return;
     const timer = setTimeout(() => {
       if (hydratingCloudRef.current) return;
-      void syncFeedsAndReadHistory(user.uid, {
+      void syncUserFeedsToServer({
         subreddits,
         xAccounts,
-        readPostIds,
       }).catch((err) => console.error('Failed to sync feeds:', err));
     }, 350);
     return () => clearTimeout(timer);
-  }, [user, cloudReady, subreddits, xAccounts, readPostIds]);
+  }, [user, cloudReady, subreddits, xAccounts]);
 
-  // Sync display & feed preferences to Firestore when signed in
+  // Sync display & feed preferences to PostgreSQL when signed in
   useEffect(() => {
     if (!user || !cloudReady || hydratingCloudRef.current) return;
     const timer = setTimeout(() => {
       if (hydratingCloudRef.current) return;
-      void syncUserPreferences(user.uid, {
+      void syncUserPreferencesToServer({
         theme,
         font,
         density,
@@ -786,13 +763,21 @@ export default function App() {
     [activeView]
   );
 
-  const handleMarkPostRead = useCallback((postId: string) => {
-    setReadPostIds((prev) => {
-      if (prev[0] === postId) return prev;
-      const filtered = prev.filter((id) => id !== postId);
-      return [postId, ...filtered].slice(0, 250);
-    });
-  }, []);
+  const handleMarkPostRead = useCallback(
+    (postId: string) => {
+      setReadPostIds((prev) => {
+        if (prev[0] === postId) return prev;
+        const filtered = prev.filter((id) => id !== postId);
+        return [postId, ...filtered].slice(0, 250);
+      });
+      if (user && cloudReady) {
+        void markPostReadOnServer(postId).catch((err) =>
+          console.error('Failed to persist read post:', err)
+        );
+      }
+    },
+    [user, cloudReady]
+  );
 
   const handleOpenPost = useCallback(
     (post: RedditPost, idx?: number) => {
@@ -813,12 +798,12 @@ export default function App() {
 
       if (user && cloudReady) {
         if (exists) {
-          void deleteSavedPostFromCloud(user.uid, post.id).catch((err) =>
-            console.error('Failed to remove saved post from cloud:', err)
+          void deleteSavedPostFromServer(post.id).catch((err) =>
+            console.error('Failed to remove saved post:', err)
           );
         } else {
-          void savePostToCloud(user.uid, post).catch((err) =>
-            console.error('Failed to save post to cloud:', err)
+          void savePostToServer(post).catch((err) =>
+            console.error('Failed to save post:', err)
           );
         }
       }
@@ -827,18 +812,22 @@ export default function App() {
   );
 
   const handleClearSaved = useCallback(() => {
-    const current = savedPosts;
     setSavedPosts([]);
-    if (user && cloudReady && current.length > 0) {
-      void clearAllSavedPostsFromCloud(user.uid, current).catch((err) =>
-        console.error('Failed to clear saved posts in cloud:', err)
+    if (user && cloudReady) {
+      void clearAllSavedPostsFromServer().catch((err) =>
+        console.error('Failed to clear saved posts:', err)
       );
     }
-  }, [savedPosts, user, cloudReady]);
+  }, [user, cloudReady]);
 
   const handleClearReadHistory = useCallback(() => {
     setReadPostIds([]);
-  }, []);
+    if (user && cloudReady) {
+      void clearReadHistoryOnServer().catch((err) =>
+        console.error('Failed to clear read history:', err)
+      );
+    }
+  }, [user, cloudReady]);
 
   const handleSelectSubredditFromPost = useCallback((name: string) => {
     setSubreddits((prev) => {
@@ -1427,10 +1416,14 @@ export default function App() {
         savedCount={savedPosts.length}
         readCount={readPostIds.length}
         onSignInGoogle={async () => {
-          await signInWithGoogle();
+          const signedInUser = await startGoogleSignInPopup();
+          setUser(signedInUser);
+          setHeaderAvatarFailed(false);
         }}
         onSignOut={async () => {
-          await signOutUser();
+          await logoutAccount();
+          setUser(null);
+          setCloudReady(false);
         }}
         onClearReadHistory={handleClearReadHistory}
         onClose={() => setShowProfile(false)}

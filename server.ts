@@ -8,6 +8,7 @@ import {
   fetchXTweetDetails,
   sanitizeXHandle,
 } from './server/xFetcher.ts';
+import { registerUserRoutes } from './server/userRoutes.ts';
 
 dotenv.config();
 
@@ -475,7 +476,11 @@ function sanitizeSubredditName(raw: string): string {
 
 async function createServer() {
   const app = express();
-  app.use(express.json());
+  app.set('trust proxy', 1);
+  app.use(express.json({ limit: '2mb' }));
+
+  // Google OAuth + Prisma PostgreSQL user persistence endpoints
+  registerUserRoutes(app);
 
   // GET /api/reddit/feed?subreddits=programming+design&sort=best&t=day&after=...
   app.get('/api/reddit/feed', async (req, res) => {
@@ -827,7 +832,7 @@ async function createServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Subfeed running on http://0.0.0.0:${PORT}`);
+    console.log(`minisocial running on http://0.0.0.0:${PORT}`);
   });
 }
 

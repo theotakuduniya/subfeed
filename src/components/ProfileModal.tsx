@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import type { User } from 'firebase/auth';
 import {
   Bookmark,
   Check,
@@ -9,10 +8,11 @@ import {
   LogOut,
   X,
 } from 'lucide-react';
+import type { AuthUser } from '../lib/account';
 
 interface ProfileModalProps {
   isOpen: boolean;
-  user: User | null;
+  user: AuthUser | null;
   authLoading: boolean;
   syncing: boolean;
   subredditCount: number;
@@ -79,15 +79,11 @@ export function ProfileModal({
     try {
       await onSignInGoogle();
     } catch (err) {
-      const code = (err as { code?: string })?.code || '';
-      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+      const msg = err instanceof Error ? err.message : '';
+      if (msg === 'POPUP_CLOSED') {
         setAuthError(null);
-      } else if (code === 'auth/popup-blocked') {
-        setAuthError('Popup was blocked by your browser. Please allow popups and try again.');
       } else {
-        setAuthError(
-          err instanceof Error ? err.message : 'Unable to sign in with Google right now.'
-        );
+        setAuthError(msg || 'Unable to sign in with Google right now.');
       }
     } finally {
       setBusy(false);

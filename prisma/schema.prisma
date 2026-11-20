@@ -1,0 +1,82 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  googleId     String   @unique
+  email        String   @unique
+  displayName  String   @default("")
+  photoUrl     String   @default("")
+  theme        String   @default("dark")
+  font         String   @default("geist-mono")
+  density      String   @default("comfortable")
+  sort         String   @default("best")
+  timeframe    String   @default("day")
+  sourceFilter String   @default("all")
+  initialized  Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  subreddits FollowedSubreddit[]
+  xAccounts  FollowedXAccount[]
+  savedPosts SavedPost[]
+  readPosts  ReadPost[]
+}
+
+model FollowedSubreddit {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, name])
+  @@index([userId, position])
+}
+
+model FollowedXAccount {
+  id        String   @id @default(cuid())
+  userId    String
+  handle    String
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, handle])
+  @@index([userId, position])
+}
+
+model SavedPost {
+  id      String   @id @default(cuid())
+  userId  String
+  postId  String
+  source  String   @default("reddit")
+  payload Json
+  savedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, postId])
+  @@index([userId, savedAt(sort: Desc)])
+}
+
+model ReadPost {
+  id     String   @id @default(cuid())
+  userId String
+  postId String
+  readAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, postId])
+  @@index([userId, readAt(sort: Desc)])
+}

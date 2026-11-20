@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import type { User } from 'firebase/auth';
 import {
   Bookmark,
   ChevronDown,
@@ -16,6 +15,7 @@ import type {
   SubredditSuggestion,
   XProfilePreview,
 } from '../types/reddit';
+import type { AuthUser } from '../lib/account';
 import {
   formatCompactNumber,
   sanitizeSubredditName,
@@ -29,7 +29,7 @@ interface SidebarProps {
   xAccounts: string[];
   activeView: ActiveView;
   savedCount: number;
-  user: User | null;
+  user: AuthUser | null;
   isOpenMobile: boolean;
   isDesktopOpen: boolean;
   addInputRef: React.RefObject<HTMLInputElement | null>;
