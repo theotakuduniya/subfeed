@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import type { RedditPost } from '../types/reddit';
 import { formatCompactNumber, formatRelativeTime } from '../lib/reddit';
+import { formatVideoDuration } from '../lib/youtube';
 
 interface PostCardProps {
   post: RedditPost;
@@ -22,6 +23,7 @@ interface PostCardProps {
   onOpen: (post: RedditPost) => void;
   onSelectSubreddit: (name: string) => void;
   onSelectXAccount: (handle: string) => void;
+  onSelectYoutubeChannel: (handle: string) => void;
   onToggleSave: (post: RedditPost) => void;
 }
 
@@ -35,12 +37,15 @@ export function PostCard({
   onOpen,
   onSelectSubreddit,
   onSelectXAccount,
+  onSelectYoutubeChannel,
   onToggleSave,
 }: PostCardProps) {
   const [imageFailed, setImageFailed] = useState(false);
   const shouldReduceMotion = useReducedMotion();
 
   const isX = post.source === 'x';
+  const isYouTube = post.source === 'youtube';
+  const durationLabel = isYouTube ? formatVideoDuration(post.durationSeconds) : null;
   const heroImage =
     !imageFailed && !post.over18 && !post.spoiler
       ? post.previewImage || post.galleryImages[0] || post.thumbnail
@@ -54,7 +59,7 @@ export function PostCard({
         .trim()
     : '';
 
-  const isExternalLink = !isX && !post.isSelf && !post.domain.startsWith('self.');
+  const isExternalLink = !isX && !isYouTube && !post.isSelf && !post.domain.startsWith('self.');
   const galleryCount = post.galleryImages.length;
   const mutedRead = isRead && !isSelected;
 
@@ -77,7 +82,43 @@ export function PostCard({
       <div className="p-4 sm:p-5">
         {/* Top Metadata Line (Zero-Pill) */}
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11.5px] text-[var(--sf-text-muted)]">
-          {isX ? (
+          {isYouTube ? (
+            <>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelectYoutubeChannel(post.subreddit || post.author);
+                }}
+                className="font-medium text-[var(--sf-text)] hover:text-[var(--sf-accent)] transition-colors"
+              >
+                yt/@{post.author}
+              </button>
+              {post.channelTitle &&
+                post.channelTitle.toLowerCase() !== post.author.toLowerCase() && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span className="truncate max-w-[160px]">{post.channelTitle}</span>
+                  </>
+                )}
+              <span aria-hidden="true">·</span>
+              <span className="tabular-nums">{formatRelativeTime(post.createdUtc)}</span>
+              {post.isShort && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="text-[var(--sf-text-secondary)]">Short</span>
+                </>
+              )}
+              {post.flair && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="text-zinc-400 dark:text-zinc-500 truncate max-w-[180px]">
+                    {post.flair}
+                  </span>
+                </>
+              )}
+            </>
+          ) : isX ? (
             <>
               <button
                 type="button"
@@ -198,25 +239,37 @@ export function PostCard({
 
         {/* Media Preview */}
         {heroImage && (
-          <div className="relative mt-4 rounded-md overflow-hidden border border-[var(--sf-border-subtle)] bg-[var(--sf-surface-muted)]">
+          <div
+            className={`relative mt-4 rounded-md overflow-hidden border border-[var(--sf-border-subtle)] bg-[var(--sf-surface-muted)] ${
+              isYouTube ? 'aspect-video' : ''
+            }`}
+          >
             <img
               src={heroImage}
               alt={post.title}
               referrerPolicy="no-referrer"
               loading="lazy"
               onError={() => setImageFailed(true)}
-              className={`w-full max-h-[420px] object-contain mx-auto transition-[filter,opacity] duration-200 ${
+              className={`w-full transition-[filter,opacity] duration-200 ${
+                isYouTube
+                  ? 'h-full object-cover'
+                  : 'max-h-[420px] object-contain mx-auto'
+              } ${
                 mutedRead
                   ? 'grayscale-[80%] opacity-80 group-hover:grayscale-[30%] group-hover:opacity-100'
                   : ''
               }`}
             />
             {(post.isVideo || galleryCount > 1) && (
-              <div className="absolute bottom-2.5 right-2.5 px-2 py-1 text-[11px] font-medium bg-black/75 text-zinc-100 rounded tabular-nums flex items-center gap-1.5">
+              <div className="absolute bottom-2.5 right-2.5 px-2 py-1 text-[11px] font-medium bg-black/80 text-zinc-100 rounded tabular-nums flex items-center gap-1.5">
                 {post.isVideo ? (
                   <>
                     <Play className="w-3 h-3 fill-current" />
-                    <span>Video</span>
+                    <span>
+                      {isYouTube
+                        ? durationLabel || (post.isShort ? 'Short' : 'Watch')
+                        : 'Video'}
+                    </span>
                   </>
                 ) : (
                   <span>1 / {galleryCount}</span>
@@ -229,52 +282,95 @@ export function PostCard({
         {/* Footer Metrics & Actions */}
         <div className="mt-4 pt-3 border-t border-[var(--sf-border-subtle)] flex items-center justify-between gap-4 text-[12px] text-[var(--sf-text-muted)]">
           <div className="flex items-center gap-4 tabular-nums min-w-0">
-            <span
-              className={`inline-flex items-center gap-1 font-medium ${
-                mutedRead
-                  ? 'text-[var(--sf-text-muted)]'
-                  : post.score >= 500
-                    ? 'text-[var(--sf-accent)]'
-                    : 'text-[var(--sf-text-secondary)]'
-              }`}
-            >
-              {isX ? (
-                <Heart className="w-3.5 h-3.5 shrink-0" />
-              ) : (
-                <ArrowUp className="w-3.5 h-3.5 shrink-0" />
-              )}
-              {formatCompactNumber(post.score)}
-            </span>
+            {isYouTube ? (
+              <>
+                {(post.views ?? 0) > 0 && (
+                  <span
+                    className={`inline-flex items-center gap-1 font-medium ${
+                      mutedRead
+                        ? 'text-[var(--sf-text-muted)]'
+                        : post.views! >= 50_000
+                          ? 'text-[var(--sf-accent)]'
+                          : 'text-[var(--sf-text-secondary)]'
+                    }`}
+                  >
+                    <Play className="w-3 h-3 fill-current shrink-0" />
+                    {formatCompactNumber(post.views!)} views
+                  </span>
+                )}
+                {post.score > 0 && (
+                  <span className="inline-flex items-center gap-1">
+                    <Heart className="w-3.5 h-3.5 shrink-0 opacity-75" />
+                    {formatCompactNumber(post.score)}
+                  </span>
+                )}
+                {post.numComments > 0 && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <MessageSquare className="w-3.5 h-3.5 shrink-0 opacity-75" />
+                    {formatCompactNumber(post.numComments)}
+                  </span>
+                )}
+                <a
+                  href={post.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="hidden sm:inline-flex items-center gap-1 text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] transition-colors"
+                >
+                  <span>youtube.com</span>
+                  <ArrowUpRight className="w-3 h-3 shrink-0" />
+                </a>
+              </>
+            ) : (
+              <>
+                <span
+                  className={`inline-flex items-center gap-1 font-medium ${
+                    mutedRead
+                      ? 'text-[var(--sf-text-muted)]'
+                      : post.score >= 500
+                        ? 'text-[var(--sf-accent)]'
+                        : 'text-[var(--sf-text-secondary)]'
+                  }`}
+                >
+                  {isX ? (
+                    <Heart className="w-3.5 h-3.5 shrink-0" />
+                  ) : (
+                    <ArrowUp className="w-3.5 h-3.5 shrink-0" />
+                  )}
+                  {formatCompactNumber(post.score)}
+                </span>
 
-            {isX && (post.reposts ?? 0) > 0 && (
-              <span className="inline-flex items-center gap-1.5">
-                <Repeat2 className="w-3.5 h-3.5 shrink-0 opacity-75" />
-                {formatCompactNumber(post.reposts!)}
-              </span>
-            )}
+                {isX && (post.reposts ?? 0) > 0 && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Repeat2 className="w-3.5 h-3.5 shrink-0 opacity-75" />
+                    {formatCompactNumber(post.reposts!)}
+                  </span>
+                )}
 
-            <span className="inline-flex items-center gap-1.5">
-              <MessageSquare className="w-3.5 h-3.5 shrink-0 opacity-75" />
-              {formatCompactNumber(post.numComments)}
-            </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <MessageSquare className="w-3.5 h-3.5 shrink-0 opacity-75" />
+                  {formatCompactNumber(post.numComments)}
+                </span>
 
-            {isX && (post.views ?? 0) > 0 && (
-              <span className="hidden sm:inline text-[var(--sf-text-muted)]">
-                {formatCompactNumber(post.views!)} views
-              </span>
-            )}
+                {isX && (post.views ?? 0) > 0 && (
+                  <span className="hidden sm:inline text-[var(--sf-text-muted)]">
+                    {formatCompactNumber(post.views!)} views
+                  </span>
+                )}
 
-            {isExternalLink && (
-              <a
-                href={post.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={(e) => e.stopPropagation()}
-                className="inline-flex items-center gap-1 text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] transition-colors truncate max-w-[200px]"
-              >
-                <span className="truncate">{post.domain}</span>
-                <ArrowUpRight className="w-3 h-3 shrink-0" />
-              </a>
+                {isExternalLink && (
+                  <a
+                    href={post.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="inline-flex items-center gap-1 text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] transition-colors truncate max-w-[200px]"
+                  >
+                    <span className="truncate">{post.domain}</span>
+                    <ArrowUpRight className="w-3 h-3 shrink-0" />
+                  </a>
+                )}
+              </>
             )}
           </div>
 

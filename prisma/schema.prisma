@@ -23,11 +23,13 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  subreddits FollowedSubreddit[]
-  xAccounts  FollowedXAccount[]
-  xTopics    FollowedTopic[]
-  savedPosts SavedPost[]
-  readPosts  ReadPost[]
+  subreddits      FollowedSubreddit[]
+  xAccounts       FollowedXAccount[]
+  xTopics         FollowedTopic[]
+  youtubeChannels FollowedYoutubeChannel[]
+  youtubeTopics   FollowedYoutubeTopic[]
+  savedPosts      SavedPost[]
+  readPosts       ReadPost[]
 }
 
 model FollowedSubreddit {
@@ -57,6 +59,35 @@ model FollowedXAccount {
 }
 
 model FollowedTopic {
+  id        String   @id @default(cuid())
+  userId    String
+  topic     String
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, topic])
+  @@index([userId, position])
+}
+
+model FollowedYoutubeChannel {
+  id                String   @id @default(cuid())
+  userId            String
+  handle            String
+  channelId         String   @default("")
+  uploadsPlaylistId String   @default("")
+  title             String   @default("")
+  position          Int      @default(0)
+  createdAt         DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, handle])
+  @@index([userId, position])
+}
+
+model FollowedYoutubeTopic {
   id        String   @id @default(cuid())
   userId    String
   topic     String

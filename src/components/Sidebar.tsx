@@ -14,6 +14,7 @@ import type {
   ActiveView,
   SubredditSuggestion,
   XProfilePreview,
+  YoutubeChannelPreview,
 } from '../types/reddit';
 import type { AuthUser } from '../lib/account';
 import {
@@ -27,12 +28,22 @@ import {
   sanitizeXHandle,
   sanitizeXTopic,
 } from '../lib/x';
+import {
+  POPULAR_YOUTUBE_TOPICS,
+  lookupYoutubeChannel,
+  sanitizeYoutubeHandle,
+  sanitizeYoutubeTopic,
+} from '../lib/youtube';
 import { SubfeedIcon } from './SubfeedIcon';
+
+type AddFeedMode = 'reddit' | 'x' | 'topic' | 'youtube' | 'yt-topic';
 
 interface SidebarProps {
   subreddits: string[];
   xAccounts: string[];
   xTopics: string[];
+  youtubeChannels: string[];
+  youtubeTopics: string[];
   activeView: ActiveView;
   savedCount: number;
   user: AuthUser | null;
@@ -46,6 +57,10 @@ interface SidebarProps {
   onRemoveXAccount: (handle: string) => void;
   onAddXTopic: (topic: string) => void;
   onRemoveXTopic: (topic: string) => void;
+  onAddYoutubeChannel: (handle: string) => void;
+  onRemoveYoutubeChannel: (handle: string) => void;
+  onAddYoutubeTopic: (topic: string) => void;
+  onRemoveYoutubeTopic: (topic: string) => void;
   onOpenProfile: () => void;
   onOpenSettings: () => void;
   onOpenShortcuts: () => void;
@@ -56,6 +71,8 @@ export function Sidebar({
   subreddits,
   xAccounts,
   xTopics,
+  youtubeChannels,
+  youtubeTopics,
   activeView,
   savedCount,
   user,
@@ -69,15 +86,20 @@ export function Sidebar({
   onRemoveXAccount,
   onAddXTopic,
   onRemoveXTopic,
+  onAddYoutubeChannel,
+  onRemoveYoutubeChannel,
+  onAddYoutubeTopic,
+  onRemoveYoutubeTopic,
   onOpenProfile,
   onOpenSettings,
   onOpenShortcuts,
   onCloseMobile,
 }: SidebarProps) {
-  const [addMode, setAddMode] = useState<'reddit' | 'x' | 'topic'>('reddit');
+  const [addMode, setAddMode] = useState<AddFeedMode>('reddit');
   const [inputValue, setInputValue] = useState('');
   const [suggestions, setSuggestions] = useState<SubredditSuggestion[]>([]);
   const [xPreview, setXPreview] = useState<XProfilePreview | null>(null);
+  const [ytPreview, setYtPreview] = useState<YoutubeChannelPreview | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
   const [highlightedIdx, setHighlightedIdx] = useState(-1);
@@ -85,6 +107,8 @@ export function Sidebar({
   const [subredditsOpen, setSubredditsOpen] = useState(true);
   const [xAccountsOpen, setXAccountsOpen] = useState(true);
   const [xTopicsOpen, setXTopicsOpen] = useState(true);
+  const [ytChannelsOpen, setYtChannelsOpen] = useState(true);
+  const [ytTopicsOpen, setYtTopicsOpen] = useState(true);
   const [avatarFailed, setAvatarFailed] = useState(false);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
 
@@ -97,6 +121,7 @@ export function Sidebar({
 
     if (addMode === 'reddit') {
       setXPreview(null);
+      setYtPreview(null);
       const clean = sanitizeSubredditName(inputValue);
       if (clean.length < 2) {
         setSuggestions([]);
@@ -124,6 +149,7 @@ export function Sidebar({
       };
     } else if (addMode === 'x') {
       setSuggestions([]);
+      setYtPreview(null);
       const clean = sanitizeXHandle(inputValue);
       if (clean.length < 2) {
         setXPreview(null);
@@ -147,9 +173,36 @@ export function Sidebar({
         clearTimeout(timer);
         controller.abort();
       };
+    } else if (addMode === 'youtube') {
+      setSuggestions([]);
+      setXPreview(null);
+      const clean = sanitizeYoutubeHandle(inputValue);
+      if (clean.length < 2) {
+        setYtPreview(null);
+        setIsSearching(false);
+        return () => controller.abort();
+      }
+
+      setIsSearching(true);
+      const timer = setTimeout(async () => {
+        try {
+          const channel = await lookupYoutubeChannel(clean, controller.signal);
+          if (!controller.signal.aborted) {
+            setYtPreview(channel);
+          }
+        } finally {
+          if (!controller.signal.aborted) setIsSearching(false);
+        }
+      }, 320);
+
+      return () => {
+        clearTimeout(timer);
+        controller.abort();
+      };
     } else {
       setSuggestions([]);
       setXPreview(null);
+      setYtPreview(null);
       setIsSearching(false);
       return () => controller.abort();
     }
@@ -166,15 +219,24 @@ export function Sidebar({
   }, []);
 
   const handleInputChange = (raw: string) => {
-    // Auto-detect #topic, @handle / x.com URLs, or r/ / reddit.com URLs
-    if (raw.startsWith('#')) {
-      if (addMode !== 'topic') setAddMode('topic');
+    // Auto-detect yt#, yt/, youtube.com/@..., #topic, @handle / x.com URLs, or r/ / reddit.com URLs
+    if (/^yt#/i.test(raw)) {
+      if (addMode !== 'yt-topic') setAddMode('yt-topic');
+      setInputValue(raw.slice(3));
+    } else if (
+      /^yt\//i.test(raw) ||
+      /^https?:\/\/(www\.|m\.)?youtube\.com\//i.test(raw)
+    ) {
+      if (addMode !== 'youtube') setAddMode('youtube');
+      setInputValue(/^yt\//i.test(raw) ? raw.slice(3) : raw);
+    } else if (raw.startsWith('#')) {
+      if (addMode !== 'topic' && addMode !== 'yt-topic') setAddMode('topic');
       setInputValue(raw.slice(1));
     } else if (
       raw.startsWith('@') ||
       /^https?:\/\/(www\.|mobile\.)?(x|twitter)\.com\//i.test(raw)
     ) {
-      if (addMode !== 'x') setAddMode('x');
+      if (addMode !== 'x' && addMode !== 'youtube') setAddMode('x');
       setInputValue(raw.startsWith('@') ? raw.slice(1) : raw);
     } else if (
       /^\/?r\//i.test(raw) ||
@@ -262,8 +324,64 @@ export function Sidebar({
     setFeedback(null);
   };
 
+  const commitYoutubeChannel = (rawHandle: string) => {
+    const clean = sanitizeYoutubeHandle(rawHandle);
+    if (!clean) {
+      setFeedback('Enter a valid YouTube handle');
+      return;
+    }
+    const existing = youtubeChannels.find(
+      (h) => h.toLowerCase() === clean.toLowerCase()
+    );
+    if (existing) {
+      setFeedback(`yt/@${existing} is already in your list`);
+      onSelectView({ type: 'youtube', handle: existing });
+      setInputValue('');
+      setYtPreview(null);
+      setShowDropdown(false);
+      return;
+    }
+    onAddYoutubeChannel(clean);
+    setYtChannelsOpen(true);
+    setInputValue('');
+    setYtPreview(null);
+    setShowDropdown(false);
+    setFeedback(null);
+  };
+
+  const commitYoutubeTopic = (rawTopic: string) => {
+    const clean = sanitizeYoutubeTopic(rawTopic);
+    if (!clean) {
+      setFeedback('Enter a valid YouTube topic');
+      return;
+    }
+    const existing = youtubeTopics.find(
+      (t) => t.toLowerCase() === clean.toLowerCase()
+    );
+    if (existing) {
+      setFeedback(`yt#${existing} is already in your list`);
+      onSelectView({ type: 'yt-topic', topic: existing });
+      setInputValue('');
+      setShowDropdown(false);
+      return;
+    }
+    onAddYoutubeTopic(clean);
+    setYtTopicsOpen(true);
+    setInputValue('');
+    setShowDropdown(false);
+    setFeedback(null);
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (addMode === 'yt-topic') {
+      commitYoutubeTopic(inputValue);
+      return;
+    }
+    if (addMode === 'youtube') {
+      commitYoutubeChannel(ytPreview?.handle || inputValue);
+      return;
+    }
     if (addMode === 'topic') {
       commitXTopic(inputValue);
       return;
@@ -301,17 +419,67 @@ export function Sidebar({
     }
   };
 
-  const totalSources = subreddits.length + xAccounts.length + xTopics.length;
+  const totalSources =
+    subreddits.length +
+    xAccounts.length +
+    xTopics.length +
+    youtubeChannels.length +
+    youtubeTopics.length;
   const cleanXQuery = sanitizeXHandle(inputValue);
   const cleanRedditQuery = sanitizeSubredditName(inputValue);
   const cleanTopicQuery = sanitizeXTopic(inputValue);
+  const cleanYtChannelQuery = sanitizeYoutubeHandle(inputValue);
+  const cleanYtTopicQuery = sanitizeYoutubeTopic(inputValue);
   const matchingPopularTopics = POPULAR_X_TOPICS.filter((t) =>
     cleanTopicQuery ? t.toLowerCase().includes(cleanTopicQuery.toLowerCase()) : true
+  ).slice(0, 6);
+  const matchingPopularYtTopics = POPULAR_YOUTUBE_TOPICS.filter((t) =>
+    cleanYtTopicQuery ? t.toLowerCase().includes(cleanYtTopicQuery.toLowerCase()) : true
   ).slice(0, 6);
   const userInitial = (user?.displayName || user?.email || 'M')
     .trim()
     .slice(0, 1)
     .toUpperCase();
+
+  const cycleAddMode = () => {
+    const order: AddFeedMode[] = ['reddit', 'x', 'topic', 'youtube', 'yt-topic'];
+    setAddMode((m) => order[(order.indexOf(m) + 1) % order.length]);
+    setFeedback(null);
+    addInputRef.current?.focus();
+  };
+
+  const modePrefixLabel =
+    addMode === 'reddit'
+      ? 'r/'
+      : addMode === 'x'
+        ? '@'
+        : addMode === 'topic'
+          ? '#'
+          : addMode === 'youtube'
+            ? 'yt/'
+            : 'yt#';
+
+  const modePlaceholder =
+    addMode === 'reddit'
+      ? 'add subreddit'
+      : addMode === 'x'
+        ? 'add x handle'
+        : addMode === 'topic'
+          ? 'follow x topic'
+          : addMode === 'youtube'
+            ? 'add youtube @handle'
+            : 'follow youtube topic';
+
+  const modeAriaLabel =
+    addMode === 'reddit'
+      ? 'Subreddit'
+      : addMode === 'x'
+        ? 'X Account'
+        : addMode === 'topic'
+          ? 'X Topic'
+          : addMode === 'youtube'
+            ? 'YouTube Channel'
+            : 'YouTube Topic';
 
   const content = (
     <aside className="flex flex-col h-full w-[min(86vw,286px)] lg:w-[264px] shrink-0 bg-[var(--sf-sidebar)] border-r border-[var(--sf-border)] select-none glass:backdrop-blur-2xl">
@@ -398,20 +566,12 @@ export function Sidebar({
           <div className="flex items-center bg-[var(--sf-surface)] border border-[var(--sf-border)] focus-within:border-[var(--sf-border-strong)] rounded-md transition-colors glass:backdrop-blur-md">
             <button
               type="button"
-              onClick={() => {
-                setAddMode((m) =>
-                  m === 'reddit' ? 'x' : m === 'x' ? 'topic' : 'reddit'
-                );
-                setFeedback(null);
-                addInputRef.current?.focus();
-              }}
-              title="Switch between Subreddit (r/), X Account (@), and Topic (#)"
-              aria-label={`Switch add mode (currently ${
-                addMode === 'reddit' ? 'Subreddit' : addMode === 'x' ? 'X Account' : 'X Topic'
-              })`}
-              className="pl-2.5 pr-1.5 py-2 text-[12px] font-medium text-[var(--sf-text-muted)] hover:text-[var(--sf-accent)] transition-colors shrink-0 border-r border-[var(--sf-border-subtle)] min-w-[34px] text-center"
+              onClick={cycleAddMode}
+              title="Cycle source type: Subreddit (r/), X Account (@), X Topic (#), YouTube Channel (yt/), YouTube Topic (yt#)"
+              aria-label={`Switch add mode (currently ${modeAriaLabel})`}
+              className="pl-2.5 pr-1.5 py-2 text-[11.5px] font-medium text-[var(--sf-text-muted)] hover:text-[var(--sf-accent)] transition-colors shrink-0 border-r border-[var(--sf-border-subtle)] min-w-[38px] text-center"
             >
-              {addMode === 'reddit' ? 'r/' : addMode === 'x' ? '@' : '#'}
+              {modePrefixLabel}
             </button>
             <input
               ref={addInputRef}
@@ -420,33 +580,15 @@ export function Sidebar({
               onChange={(e) => handleInputChange(e.target.value)}
               onFocus={() => setShowDropdown(true)}
               onKeyDown={handleKeyDown}
-              placeholder={
-                addMode === 'reddit'
-                  ? 'add subreddit'
-                  : addMode === 'x'
-                    ? 'add x handle'
-                    : 'follow x topic'
-              }
-              aria-label={
-                addMode === 'reddit'
-                  ? 'Add subreddit to your list'
-                  : addMode === 'x'
-                    ? 'Add X account to your list'
-                    : 'Follow X topic'
-              }
+              placeholder={modePlaceholder}
+              aria-label={`Add ${modeAriaLabel}`}
               autoComplete="off"
               spellCheck={false}
               className="w-full py-2 px-2 text-[12.5px] bg-transparent text-[var(--sf-text)] placeholder:text-[var(--sf-text-muted)]/70 focus:outline-none"
             />
             <button
               type="submit"
-              aria-label={
-                addMode === 'reddit'
-                  ? 'Add subreddit'
-                  : addMode === 'x'
-                    ? 'Add X account'
-                    : 'Follow topic'
-              }
+              aria-label={`Add ${modeAriaLabel}`}
               className="px-2.5 py-2 text-[var(--sf-text-muted)] hover:text-[var(--sf-accent)] transition-colors shrink-0"
             >
               <Plus className="w-3.5 h-3.5" />
@@ -608,6 +750,108 @@ export function Sidebar({
                           </span>
                           <span className="text-[11px] text-[var(--sf-text-muted)] shrink-0">
                             {isAdded ? 'added' : 'topic'}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {/* YouTube Channel Lookup Dropdown */}
+          {showDropdown && addMode === 'youtube' && cleanYtChannelQuery.length >= 2 && (
+            <div className="absolute left-0 right-0 top-full mt-1.5 z-30 bg-[var(--sf-surface-elevated)] border border-[var(--sf-border)] rounded-md shadow-xl overflow-hidden glass:backdrop-blur-2xl">
+              {isSearching && !ytPreview ? (
+                <div className="px-3 py-2.5 text-[11.5px] text-[var(--sf-text-muted)]">
+                  Looking up yt/@{cleanYtChannelQuery}...
+                </div>
+              ) : ytPreview ? (
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    commitYoutubeChannel(ytPreview.handle);
+                  }}
+                  className="w-full text-left px-3 py-2.5 hover:bg-[var(--sf-hover)] transition-colors"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[12.5px] font-medium text-[var(--sf-text)] truncate">
+                      yt/@{ytPreview.handle}
+                    </span>
+                    <span className="text-[11px] tabular-nums text-[var(--sf-text-muted)] shrink-0">
+                      {youtubeChannels.some(
+                        (h) => h.toLowerCase() === ytPreview.handle.toLowerCase()
+                      )
+                        ? 'added'
+                        : ytPreview.subscribers > 0
+                          ? formatCompactNumber(ytPreview.subscribers)
+                          : ''}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-[var(--sf-text-muted)] truncate">
+                    {ytPreview.title}
+                    {ytPreview.description ? ` · ${ytPreview.description}` : ''}
+                  </p>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    commitYoutubeChannel(cleanYtChannelQuery);
+                  }}
+                  className="w-full text-left px-3 py-2.5 text-[12px] text-[var(--sf-text-secondary)] hover:bg-[var(--sf-hover)] transition-colors"
+                >
+                  Add{' '}
+                  <span className="font-medium text-[var(--sf-text)]">
+                    yt/@{cleanYtChannelQuery}
+                  </span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* YouTube Topic Suggestions Dropdown */}
+          {showDropdown && addMode === 'yt-topic' && (
+            <div className="absolute left-0 right-0 top-full mt-1.5 z-30 bg-[var(--sf-surface-elevated)] border border-[var(--sf-border)] rounded-md shadow-xl overflow-hidden glass:backdrop-blur-2xl">
+              {cleanYtTopicQuery.length >= 1 && (
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    commitYoutubeTopic(cleanYtTopicQuery);
+                  }}
+                  className="w-full text-left px-3 py-2.5 text-[12px] text-[var(--sf-text-secondary)] hover:bg-[var(--sf-hover)] border-b border-[var(--sf-border-subtle)] transition-colors"
+                >
+                  Follow YouTube topic{' '}
+                  <span className="font-medium text-[var(--sf-text)]">
+                    yt#{cleanYtTopicQuery}
+                  </span>
+                </button>
+              )}
+              {matchingPopularYtTopics.length > 0 && (
+                <ul className="divide-y divide-[var(--sf-border-subtle)] max-h-56 overflow-y-auto">
+                  {matchingPopularYtTopics.map((topic) => {
+                    const isAdded = youtubeTopics.some(
+                      (t) => t.toLowerCase() === topic.toLowerCase()
+                    );
+                    return (
+                      <li key={topic}>
+                        <button
+                          type="button"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            commitYoutubeTopic(topic);
+                          }}
+                          className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left hover:bg-[var(--sf-hover)] transition-colors"
+                        >
+                          <span className="text-[12.5px] font-medium text-[var(--sf-text)] truncate">
+                            yt#{topic}
+                          </span>
+                          <span className="text-[11px] text-[var(--sf-text-muted)] shrink-0">
+                            {isAdded ? 'added' : 'video topic'}
                           </span>
                         </button>
                       </li>
@@ -875,6 +1119,184 @@ export function Sidebar({
                             }}
                             aria-label={`Remove #${topic}`}
                             title={`Remove #${topic}`}
+                            className="absolute right-1.5 p-1 text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] opacity-100 lg:opacity-0 lg:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity rounded"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </section>
+
+        {/* YouTube Channels Accordion */}
+        <section>
+          <button
+            type="button"
+            onClick={() => setYtChannelsOpen((prev) => !prev)}
+            aria-expanded={ytChannelsOpen}
+            className="w-full px-3 py-1.5 flex items-center justify-between rounded-md text-[11.5px] font-medium text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] hover:bg-[var(--sf-hover)] transition-colors"
+          >
+            <span className="flex items-center gap-1.5">
+              <ChevronDown
+                className={`w-3.5 h-3.5 transition-transform duration-150 ${
+                  ytChannelsOpen ? 'rotate-0' : '-rotate-90'
+                }`}
+              />
+              <span>YouTube Channels</span>
+            </span>
+            <span className="text-[11px] tabular-nums text-[var(--sf-text-muted)]/75">
+              {youtubeChannels.length}
+            </span>
+          </button>
+
+          <AnimatePresence initial={false}>
+            {ytChannelsOpen && (
+              <motion.div
+                key="yt-channels-accordion"
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                className="overflow-hidden"
+              >
+                {youtubeChannels.length === 0 ? (
+                  <p className="px-3 py-2 text-[11.5px] leading-relaxed text-[var(--sf-text-muted)]">
+                    Type yt/handle above to follow YouTube channels.
+                  </p>
+                ) : (
+                  <ul className="mt-1 space-y-0.5">
+                    {youtubeChannels.map((handle) => {
+                      const isActive =
+                        activeView.type === 'youtube' &&
+                        activeView.handle.toLowerCase() === handle.toLowerCase();
+
+                      return (
+                        <li key={handle} className="group relative flex items-center">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onSelectView({ type: 'youtube', handle });
+                              onCloseMobile();
+                            }}
+                            className={`w-full text-left pl-3 pr-9 py-1.5 text-[13px] rounded-md transition-colors truncate ${
+                              isActive
+                                ? 'bg-[var(--sf-active)] text-[var(--sf-text)] font-medium glass:shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]'
+                                : 'text-[var(--sf-text-secondary)] hover:text-[var(--sf-text)] hover:bg-[var(--sf-hover)]'
+                            }`}
+                          >
+                            <span
+                              className={
+                                isActive
+                                  ? 'text-[var(--sf-accent)]'
+                                  : 'text-[var(--sf-text-muted)]/75'
+                              }
+                            >
+                              yt/@
+                            </span>
+                            {handle}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onRemoveYoutubeChannel(handle);
+                            }}
+                            aria-label={`Remove yt/@${handle}`}
+                            title={`Remove yt/@${handle}`}
+                            className="absolute right-1.5 p-1 text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] opacity-100 lg:opacity-0 lg:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity rounded"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </section>
+
+        {/* YouTube Topics Accordion */}
+        <section>
+          <button
+            type="button"
+            onClick={() => setYtTopicsOpen((prev) => !prev)}
+            aria-expanded={ytTopicsOpen}
+            className="w-full px-3 py-1.5 flex items-center justify-between rounded-md text-[11.5px] font-medium text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] hover:bg-[var(--sf-hover)] transition-colors"
+          >
+            <span className="flex items-center gap-1.5">
+              <ChevronDown
+                className={`w-3.5 h-3.5 transition-transform duration-150 ${
+                  ytTopicsOpen ? 'rotate-0' : '-rotate-90'
+                }`}
+              />
+              <span>YouTube Topics</span>
+            </span>
+            <span className="text-[11px] tabular-nums text-[var(--sf-text-muted)]/75">
+              {youtubeTopics.length}
+            </span>
+          </button>
+
+          <AnimatePresence initial={false}>
+            {ytTopicsOpen && (
+              <motion.div
+                key="yt-topics-accordion"
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                className="overflow-hidden"
+              >
+                {youtubeTopics.length === 0 ? (
+                  <p className="px-3 py-2 text-[11.5px] leading-relaxed text-[var(--sf-text-muted)]">
+                    Type yt#topic above to follow YouTube topics.
+                  </p>
+                ) : (
+                  <ul className="mt-1 space-y-0.5">
+                    {youtubeTopics.map((topic) => {
+                      const isActive =
+                        activeView.type === 'yt-topic' &&
+                        activeView.topic.toLowerCase() === topic.toLowerCase();
+
+                      return (
+                        <li key={topic} className="group relative flex items-center">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onSelectView({ type: 'yt-topic', topic });
+                              onCloseMobile();
+                            }}
+                            className={`w-full text-left pl-3 pr-9 py-1.5 text-[13px] rounded-md transition-colors truncate ${
+                              isActive
+                                ? 'bg-[var(--sf-active)] text-[var(--sf-text)] font-medium glass:shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]'
+                                : 'text-[var(--sf-text-secondary)] hover:text-[var(--sf-text)] hover:bg-[var(--sf-hover)]'
+                            }`}
+                          >
+                            <span
+                              className={
+                                isActive
+                                  ? 'text-[var(--sf-accent)]'
+                                  : 'text-[var(--sf-text-muted)]/75'
+                              }
+                            >
+                              yt#
+                            </span>
+                            {topic}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onRemoveYoutubeTopic(topic);
+                            }}
+                            aria-label={`Remove yt#${topic}`}
+                            title={`Remove yt#${topic}`}
                             className="absolute right-1.5 p-1 text-[var(--sf-text-muted)] hover:text-[var(--sf-text)] opacity-100 lg:opacity-0 lg:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity rounded"
                           >
                             <X className="w-3.5 h-3.5" />

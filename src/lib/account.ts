@@ -36,6 +36,8 @@ export interface CloudAccountState {
   subreddits: string[];
   xAccounts: string[];
   xTopics: string[];
+  youtubeChannels: string[];
+  youtubeTopics: string[];
   savedPosts: RedditPost[];
   readPostIds: string[];
   preferences: UserPreferencesPayload;
@@ -152,6 +154,8 @@ export async function bootstrapUserState(payload: {
   subreddits: string[];
   xAccounts: string[];
   xTopics: string[];
+  youtubeChannels: string[];
+  youtubeTopics: string[];
   savedPosts: RedditPost[];
   readPostIds: string[];
   preferences: UserPreferencesPayload;
@@ -166,6 +170,8 @@ export async function syncUserFeedsToServer(payload: {
   subreddits: string[];
   xAccounts: string[];
   xTopics: string[];
+  youtubeChannels: string[];
+  youtubeTopics: string[];
 }): Promise<void> {
   await apiFetch<{ ok: boolean }>('/api/user/feeds', {
     method: 'PUT',

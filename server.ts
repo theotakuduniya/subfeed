@@ -14,6 +14,14 @@ import {
   startNitterHealthMonitor,
   switchNitterInstance,
 } from './server/xFetcher.ts';
+import {
+  fetchYoutubeFeed,
+  fetchYoutubeVideoDetails,
+  lookupYoutubeChannel,
+  sanitizeYoutubeHandle,
+  sanitizeYoutubeTopic,
+  sanitizeYoutubeVideoId,
+} from './server/youtubeFetcher.ts';
 import { registerUserRoutes } from './server/userRoutes.ts';
 
 dotenv.config();
@@ -888,6 +896,86 @@ async function createServer() {
       return res.status(404).json({ error: `Account @${handle} not found.` });
     }
     return res.json(profile);
+  });
+
+  // GET /api/youtube/feed?channels=Fireship,veritasium&topics=AI&sort=best&t=day&hideShorts=0&limit=25
+  app.get('/api/youtube/feed', async (req, res) => {
+    try {
+      const rawChannels = String(req.query.channels || '').trim();
+      const rawTopics = String(req.query.topics || '').trim();
+      const sort = String(req.query.sort || 'best').toLowerCase();
+      const timeframe = String(req.query.t || 'day').toLowerCase();
+      const hideShorts = req.query.hideShorts === '1' || req.query.hideShorts === 'true';
+      const limit = Math.min(50, Math.max(10, Number(req.query.limit) || 25));
+      const forceRefresh = req.query.refresh === '1';
+
+      const channels = rawChannels
+        .split(/[+,\s]+/)
+        .map(sanitizeYoutubeHandle)
+        .filter(Boolean);
+
+      const topics = rawTopics
+        .split(/[,|]+/)
+        .map(sanitizeYoutubeTopic)
+        .filter(Boolean);
+
+      if (channels.length === 0 && topics.length === 0) {
+        return res
+          .status(400)
+          .json({ error: 'At least one YouTube channel or topic is required.' });
+      }
+
+      const data = await fetchYoutubeFeed({
+        channels,
+        topics,
+        sort,
+        timeframe,
+        hideShorts,
+        limit,
+        forceRefresh,
+      });
+      return res.json(data);
+    } catch (err) {
+      console.error('YouTube feed error:', err);
+      return res.status(502).json({
+        error: 'Unable to load YouTube videos right now. Please retry.',
+      });
+    }
+  });
+
+  // GET /api/youtube/channel/:handle
+  app.get('/api/youtube/channel/:handle', async (req, res) => {
+    const handle = sanitizeYoutubeHandle(req.params.handle || '');
+    if (!handle) {
+      return res.status(400).json({ error: 'Invalid YouTube handle.' });
+    }
+    const channel = await lookupYoutubeChannel(handle);
+    if (!channel) {
+      return res.status(404).json({ error: `YouTube channel @${handle} not found.` });
+    }
+    return res.json(channel);
+  });
+
+  // GET /api/youtube/video/:id?sort=best
+  app.get('/api/youtube/video/:id', async (req, res) => {
+    try {
+      const videoId = sanitizeYoutubeVideoId(req.params.id || '');
+      if (!videoId) {
+        return res.status(400).json({ error: 'Invalid YouTube video ID.' });
+      }
+      const sort = String(req.query.sort || 'best').toLowerCase();
+      const forceRefresh = req.query.refresh === '1';
+
+      const data = await fetchYoutubeVideoDetails({
+        videoId,
+        sort,
+        forceRefresh,
+      });
+      return res.json(data);
+    } catch (err) {
+      console.error('YouTube video details error:', err);
+      return res.status(502).json({ error: 'Failed to load YouTube video details.' });
+    }
   });
 
   if (!IS_PROD) {

@@ -29,6 +29,7 @@ interface SettingsModalProps {
   sort: SortOption;
   timeframe: TimeframeOption;
   sourceFilter: SourceFilter;
+  hideYoutubeShorts: boolean;
   density: FeedDensity;
   theme: ThemeOption;
   font: FontOption;
@@ -41,6 +42,7 @@ interface SettingsModalProps {
   onChangeSort: (sort: SortOption) => void;
   onChangeTimeframe: (tf: TimeframeOption) => void;
   onChangeSourceFilter: (source: SourceFilter) => void;
+  onChangeHideYoutubeShorts: (hide: boolean) => void;
   onChangeDensity: (density: FeedDensity) => void;
   onChangeTheme: (theme: ThemeOption) => void;
   onChangeFont: (font: FontOption) => void;
@@ -115,9 +117,15 @@ const SOURCE_OPTIONS: DropdownOption<SourceFilter>[] = [
   { value: 'all', label: 'All Feeds' },
   { value: 'reddit', label: 'Reddit (r/)' },
   { value: 'x', label: 'X (@)' },
+  { value: 'youtube', label: 'YouTube (yt/)' },
 ];
 
-type MenuKey = 'theme' | 'font' | 'sort' | 'timeframe' | 'layout' | 'source' | 'nitter';
+const SHORTS_OPTIONS: DropdownOption<'show' | 'hide'>[] = [
+  { value: 'show', label: 'Show all videos' },
+  { value: 'hide', label: 'Hide Shorts' },
+];
+
+type MenuKey = 'theme' | 'font' | 'sort' | 'timeframe' | 'layout' | 'source' | 'shorts' | 'nitter';
 
 function getHealthDotClass(status: NitterInstanceHealth['status']): string {
   switch (status) {
@@ -281,6 +289,7 @@ export function SettingsModal({
   sort,
   timeframe,
   sourceFilter,
+  hideYoutubeShorts,
   density,
   theme,
   font,
@@ -293,6 +302,7 @@ export function SettingsModal({
   onChangeSort,
   onChangeTimeframe,
   onChangeSourceFilter,
+  onChangeHideYoutubeShorts,
   onChangeDensity,
   onChangeTheme,
   onChangeFont,
@@ -466,6 +476,21 @@ export function SettingsModal({
             onToggle={toggleMenu}
             onSelect={(val) => {
               onChangeSourceFilter(val);
+              setOpenMenu(null);
+            }}
+          />
+
+          <SettingDropdownRow
+            id="shorts"
+            label="YouTube Shorts"
+            description="Filter <= 60s vertical videos"
+            value={hideYoutubeShorts ? 'hide' : 'show'}
+            options={SHORTS_OPTIONS}
+            isOpen={openMenu === 'shorts'}
+            openUpward
+            onToggle={toggleMenu}
+            onSelect={(val) => {
+              onChangeHideYoutubeShorts(val === 'hide');
               setOpenMenu(null);
             }}
           />

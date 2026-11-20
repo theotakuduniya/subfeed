@@ -15,6 +15,7 @@ import {
   ExternalLink,
   Heart,
   Minus,
+  Play,
   Plus,
   RefreshCw,
   Repeat2,
@@ -31,6 +32,11 @@ import {
   formatRelativeTime,
 } from '../lib/reddit';
 import { fetchXTweet } from '../lib/x';
+import {
+  fetchYoutubeVideo,
+  formatVideoDuration,
+  sanitizeYoutubeVideoId,
+} from '../lib/youtube';
 import { MarkdownText } from './MarkdownText';
 
 interface ThreadDrawerProps {
@@ -41,6 +47,7 @@ interface ThreadDrawerProps {
   onToggleSave: (post: RedditPost) => void;
   onSelectSubreddit: (name: string) => void;
   onSelectXAccount: (handle: string) => void;
+  onSelectYoutubeChannel: (handle: string) => void;
   onSwitchNitterInstance?: () => Promise<void>;
 }
 
@@ -51,7 +58,20 @@ const COMMENT_SORTS: { value: CommentSortOption; label: string }[] = [
   { value: 'controversial', label: 'Controversial' },
 ];
 
-function CommentNode({ comment, isX }: { comment: RedditComment; isX: boolean }) {
+const YOUTUBE_COMMENT_SORTS: { value: CommentSortOption; label: string }[] = [
+  { value: 'top', label: 'Top' },
+  { value: 'new', label: 'Newest' },
+];
+
+function CommentNode({
+  comment,
+  isX,
+  isYouTube,
+}: {
+  comment: RedditComment;
+  isX: boolean;
+  isYouTube: boolean;
+}) {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
@@ -73,17 +93,19 @@ function CommentNode({ comment, isX }: { comment: RedditComment; isX: boolean })
               : 'text-[var(--sf-text)]'
           }`}
         >
-          {isX ? `@${comment.author}` : `u/${comment.author}`}
+          {isX || isYouTube ? `@${comment.author}` : `u/${comment.author}`}
         </span>
         {comment.isSubmitter && (
-          <span className="text-[11px] text-[var(--sf-accent)]">OP</span>
+          <span className="text-[11px] text-[var(--sf-accent)]">
+            {isYouTube ? 'Creator' : 'OP'}
+          </span>
         )}
         {comment.distinguished === 'moderator' && (
           <span className="text-[11px] text-emerald-700 dark:text-emerald-500 mocha:text-[#a6e3a1]">MOD</span>
         )}
         <span aria-hidden="true">·</span>
         <span className="tabular-nums">
-          {formatCompactNumber(comment.score)} {isX ? 'likes' : 'pts'}
+          {formatCompactNumber(comment.score)} {isX || isYouTube ? 'likes' : 'pts'}
         </span>
         <span aria-hidden="true">·</span>
         <span className="tabular-nums">{formatRelativeTime(comment.createdUtc)}</span>
@@ -95,7 +117,12 @@ function CommentNode({ comment, isX }: { comment: RedditComment; isX: boolean })
           {comment.replies.length > 0 && (
             <div className="mt-2">
               {comment.replies.map((reply) => (
-                <CommentNode key={reply.id} comment={reply} isX={isX} />
+                <CommentNode
+                  key={reply.id}
+                  comment={reply}
+                  isX={isX}
+                  isYouTube={isYouTube}
+                />
               ))}
             </div>
           )}
@@ -113,6 +140,7 @@ export function ThreadDrawer({
   onToggleSave,
   onSelectSubreddit,
   onSelectXAccount,
+  onSelectYoutubeChannel,
   onSwitchNitterInstance,
 }: ThreadDrawerProps) {
   const [commentSort, setCommentSort] = useState<CommentSortOption>('best');
@@ -120,6 +148,9 @@ export function ThreadDrawer({
   const [resolvedPost, setResolvedPost] = useState<RedditPost | null>(post);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ytCommentsDisabled, setYtCommentsDisabled] = useState(false);
+  const [ytApiKeyConfigured, setYtApiKeyConfigured] = useState(true);
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [galleryIndex, setGalleryIndex] = useState(0);
   const [imageError, setImageError] = useState(false);
@@ -139,6 +170,12 @@ export function ThreadDrawer({
       setGalleryIndex(0);
       setImageError(false);
       setError(null);
+      setYtCommentsDisabled(false);
+      setYtApiKeyConfigured(true);
+      setDescriptionExpanded(false);
+      if (post.source === 'youtube' && commentSort !== 'new' && commentSort !== 'top') {
+        setCommentSort('top');
+      }
       sheetY.set(0);
       if (scrollContainerRef.current) {
         scrollContainerRef.current.scrollTop = 0;
@@ -275,6 +312,46 @@ export function ThreadDrawer({
     setLoading(true);
     setError(null);
 
+    if (post.source === 'youtube') {
+      const videoId = sanitizeYoutubeVideoId(post.videoId || post.id);
+      fetchYoutubeVideo({
+        videoId,
+        sort: commentSort === 'new' ? 'new' : 'top',
+        forceRefresh: reloadNonce > 0,
+        signal: controller.signal,
+      })
+        .then((res) => {
+          if (controller.signal.aborted) return;
+          setComments(res.comments);
+          setYtCommentsDisabled(Boolean(res.commentsDisabled));
+          setYtApiKeyConfigured(res.apiKeyConfigured !== false);
+          const fetchedPost = res.post;
+          if (fetchedPost) {
+            setResolvedPost((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    ...fetchedPost,
+                    // Keep original handle if channel lookup already resolved it nicely
+                    author: prev.author || fetchedPost.author,
+                    subreddit: prev.subreddit || fetchedPost.subreddit,
+                    flair: prev.flair ?? fetchedPost.flair,
+                  }
+                : fetchedPost
+            );
+          }
+        })
+        .catch((err) => {
+          if (controller.signal.aborted) return;
+          setError(err instanceof Error ? err.message : 'Unable to load YouTube comments.');
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setLoading(false);
+        });
+
+      return () => controller.abort();
+    }
+
     const request =
       post.source === 'x'
         ? fetchXTweet({
@@ -307,17 +384,30 @@ export function ThreadDrawer({
       });
 
     return () => controller.abort();
-  }, [post?.id, post?.permalink, post?.source, post?.author, commentSort, reloadNonce]);
+  }, [post?.id, post?.permalink, post?.source, post?.author, post?.videoId, commentSort, reloadNonce]);
 
   const activePost = post ? resolvedPost || post : null;
   const isX = activePost?.source === 'x';
+  const isYouTube = activePost?.source === 'youtube';
+  const youtubeVideoId = isYouTube
+    ? sanitizeYoutubeVideoId(activePost?.videoId || activePost?.id)
+    : '';
+  const youtubeDurationLabel = isYouTube
+    ? formatVideoDuration(activePost?.durationSeconds)
+    : null;
   const externalPostUrl = activePost
-    ? isX
-      ? activePost.url
-      : `https://www.reddit.com${activePost.permalink}`
+    ? isYouTube
+      ? activePost.url || (youtubeVideoId ? `https://www.youtube.com/watch?v=${youtubeVideoId}` : '')
+      : isX
+        ? activePost.url
+        : `https://www.reddit.com${activePost.permalink}`
     : '';
   const isExternalLink = Boolean(
-    activePost && !isX && !activePost.isSelf && !activePost.domain.startsWith('self.')
+    activePost &&
+      !isX &&
+      !isYouTube &&
+      !activePost.isSelf &&
+      !activePost.domain.startsWith('self.')
   );
   const mediaImages = activePost
     ? activePost.galleryImages.length > 0
@@ -378,7 +468,30 @@ export function ThreadDrawer({
 
                 <div className="h-12 md:h-14 px-3.5 sm:px-7 flex items-center justify-between gap-2 sm:gap-4">
               <div className="flex items-center gap-1.5 sm:gap-2 text-[12px] sm:text-[12.5px] text-[var(--sf-text-muted)] min-w-0">
-                {isX ? (
+                {isYouTube ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onSelectYoutubeChannel(activePost.subreddit || activePost.author);
+                        onClose();
+                      }}
+                      className="font-medium text-[var(--sf-text)] hover:text-[var(--sf-accent)] transition-colors whitespace-nowrap shrink-0"
+                    >
+                      yt/@{activePost.author}
+                    </button>
+                    {activePost.channelTitle &&
+                      activePost.channelTitle.toLowerCase() !==
+                        activePost.author.toLowerCase() && (
+                        <>
+                          <span aria-hidden="true" className="hidden sm:inline">·</span>
+                          <span className="hidden sm:inline truncate">
+                            {activePost.channelTitle}
+                          </span>
+                        </>
+                      )}
+                  </>
+                ) : isX ? (
                   <>
                     <button
                       type="button"
@@ -440,10 +553,18 @@ export function ThreadDrawer({
                   href={externalPostUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  aria-label={isX ? 'Open on X' : 'Open on Reddit'}
+                  aria-label={
+                    isYouTube
+                      ? 'Open on YouTube'
+                      : isX
+                        ? 'Open on X'
+                        : 'Open on Reddit'
+                  }
                   className="inline-flex items-center gap-1.5 p-2 sm:px-2.5 sm:py-1.5 text-[12px] text-[var(--sf-text-secondary)] hover:text-[var(--sf-text)] rounded-md hover:bg-[var(--sf-hover)] transition-colors whitespace-nowrap"
                 >
-                  <span className="hidden sm:inline">{isX ? 'X' : 'Reddit'}</span>
+                  <span className="hidden sm:inline">
+                    {isYouTube ? 'YouTube' : isX ? 'X' : 'Reddit'}
+                  </span>
                   <ExternalLink className="w-3.5 h-3.5 sm:w-3 sm:h-3" />
                 </a>
 
@@ -465,6 +586,20 @@ export function ThreadDrawer({
                 className="flex-1 overflow-y-auto overscroll-y-contain px-4 sm:px-8 py-6 sm:py-7"
               >
               <div className="max-w-[740px] mx-auto w-full">
+                {/* Inline YouTube Player at top of drawer */}
+                {isYouTube && youtubeVideoId && (
+                  <div className="mb-5 aspect-video w-full rounded-lg overflow-hidden border border-[var(--sf-border)] bg-black shadow-lg">
+                    <iframe
+                      src={`https://www.youtube-nocookie.com/embed/${youtubeVideoId}?rel=0&modestbranding=1`}
+                      title={activePost.title}
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                      allowFullScreen
+                      referrerPolicy="strict-origin-when-cross-origin"
+                      className="w-full h-full border-0"
+                    />
+                  </div>
+                )}
+
                 {/* Post Title & Stats */}
                 <header className="pb-5 border-b border-[var(--sf-border)]">
                   <h1 className="text-[19px] sm:text-[22px] font-semibold leading-snug text-[var(--sf-text)] [text-wrap:balance]">
@@ -472,49 +607,95 @@ export function ThreadDrawer({
                   </h1>
 
                   <div className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12px] text-[var(--sf-text-muted)] tabular-nums">
-                    <span className="inline-flex items-center gap-1 text-[var(--sf-text)] font-medium">
-                      {isX ? (
-                        <Heart className="w-3.5 h-3.5 text-[var(--sf-accent)]" />
-                      ) : (
-                        <ArrowUp className="w-3.5 h-3.5 text-[var(--sf-accent)]" />
-                      )}
-                      {formatCompactNumber(activePost.score)} {isX ? 'likes' : 'points'}
-                    </span>
-
-                    {isX && (activePost.reposts ?? 0) > 0 && (
+                    {isYouTube ? (
                       <>
-                        <span aria-hidden="true">·</span>
-                        <span className="inline-flex items-center gap-1">
-                          <Repeat2 className="w-3.5 h-3.5 opacity-75" />
-                          {formatCompactNumber(activePost.reposts!)} reposts
+                        {(activePost.views ?? 0) > 0 && (
+                          <span className="inline-flex items-center gap-1 text-[var(--sf-text)] font-medium">
+                            <Play className="w-3 h-3 fill-current text-[var(--sf-accent)]" />
+                            {formatCompactNumber(activePost.views!)} views
+                          </span>
+                        )}
+                        {activePost.score > 0 && (
+                          <>
+                            {(activePost.views ?? 0) > 0 && <span aria-hidden="true">·</span>}
+                            <span className="inline-flex items-center gap-1">
+                              <Heart className="w-3.5 h-3.5 text-[var(--sf-accent)]" />
+                              {formatCompactNumber(activePost.score)} likes
+                            </span>
+                          </>
+                        )}
+                        {activePost.numComments > 0 && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span>{formatCompactNumber(activePost.numComments)} comments</span>
+                          </>
+                        )}
+                        {youtubeDurationLabel && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span>{youtubeDurationLabel}</span>
+                          </>
+                        )}
+                        {activePost.isShort && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span>Short</span>
+                          </>
+                        )}
+                        {activePost.flair && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span>{activePost.flair}</span>
+                          </>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <span className="inline-flex items-center gap-1 text-[var(--sf-text)] font-medium">
+                          {isX ? (
+                            <Heart className="w-3.5 h-3.5 text-[var(--sf-accent)]" />
+                          ) : (
+                            <ArrowUp className="w-3.5 h-3.5 text-[var(--sf-accent)]" />
+                          )}
+                          {formatCompactNumber(activePost.score)} {isX ? 'likes' : 'points'}
                         </span>
-                      </>
-                    )}
 
-                    {!isX && activePost.upvoteRatio !== null && (
-                      <>
+                        {isX && (activePost.reposts ?? 0) > 0 && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="inline-flex items-center gap-1">
+                              <Repeat2 className="w-3.5 h-3.5 opacity-75" />
+                              {formatCompactNumber(activePost.reposts!)} reposts
+                            </span>
+                          </>
+                        )}
+
+                        {!isX && activePost.upvoteRatio !== null && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span>{Math.round(activePost.upvoteRatio * 100)}% upvoted</span>
+                          </>
+                        )}
+
                         <span aria-hidden="true">·</span>
-                        <span>{Math.round(activePost.upvoteRatio * 100)}% upvoted</span>
-                      </>
-                    )}
+                        <span>
+                          {formatCompactNumber(activePost.numComments)}{' '}
+                          {isX ? 'replies' : 'comments'}
+                        </span>
 
-                    <span aria-hidden="true">·</span>
-                    <span>
-                      {formatCompactNumber(activePost.numComments)}{' '}
-                      {isX ? 'replies' : 'comments'}
-                    </span>
+                        {isX && (activePost.views ?? 0) > 0 && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span>{formatCompactNumber(activePost.views!)} views</span>
+                          </>
+                        )}
 
-                    {isX && (activePost.views ?? 0) > 0 && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span>{formatCompactNumber(activePost.views!)} views</span>
-                      </>
-                    )}
-
-                    {activePost.flair && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span>{activePost.flair}</span>
+                        {activePost.flair && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span>{activePost.flair}</span>
+                          </>
+                        )}
                       </>
                     )}
                   </div>
@@ -534,8 +715,8 @@ export function ThreadDrawer({
                   )}
                 </header>
 
-                {/* Media Section */}
-                {activePost.isVideo && activePost.videoUrl ? (
+                {/* Media Section (Reddit / X) */}
+                {!isYouTube && activePost.isVideo && activePost.videoUrl ? (
                   <div className="mt-5 rounded-md overflow-hidden border border-[var(--sf-border)] bg-black">
                     <video
                       src={activePost.videoUrl}
@@ -544,7 +725,7 @@ export function ThreadDrawer({
                       className="w-full max-h-[540px] object-contain mx-auto"
                     />
                   </div>
-                ) : currentImage && !imageError ? (
+                ) : !isYouTube && currentImage && !imageError ? (
                   <div className="mt-5">
                     <div className="rounded-md overflow-hidden border border-[var(--sf-border)] bg-[var(--sf-surface-muted)]">
                       <img
@@ -611,10 +792,36 @@ export function ThreadDrawer({
                   </a>
                 )}
 
-                {/* Self Text */}
+                {/* Self Text / YouTube Description */}
                 {activePost.selftext && (
                   <div className="mt-5 pb-6 border-b border-[var(--sf-border)]">
-                    <MarkdownText content={activePost.selftext} />
+                    {isYouTube && activePost.selftext.length > 260 && !descriptionExpanded ? (
+                      <>
+                        <p className="text-[13px] leading-[1.65] text-[var(--sf-text-secondary)] whitespace-pre-line line-clamp-4">
+                          {activePost.selftext}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setDescriptionExpanded(true)}
+                          className="mt-2 text-[12px] font-medium text-[var(--sf-accent)] hover:underline underline-offset-4"
+                        >
+                          Show full description
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <MarkdownText content={activePost.selftext} />
+                        {isYouTube && activePost.selftext.length > 260 && (
+                          <button
+                            type="button"
+                            onClick={() => setDescriptionExpanded(false)}
+                            className="mt-2 text-[12px] font-medium text-[var(--sf-text-muted)] hover:text-[var(--sf-text)]"
+                          >
+                            Collapse description
+                          </button>
+                        )}
+                      </>
+                    )}
                   </div>
                 )}
 
@@ -622,12 +829,12 @@ export function ThreadDrawer({
           <section className="mt-6">
             <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[var(--sf-border)]">
               <h2 className="text-[13px] font-medium text-[var(--sf-text)]">
-                {isX ? 'Replies' : 'Discussion'}
+                {isYouTube ? 'Top Comments' : isX ? 'Replies' : 'Discussion'}
               </h2>
 
               {!isX && (
                 <div className="flex flex-wrap items-center gap-1" role="tablist" aria-label="Sort comments">
-                  {COMMENT_SORTS.map((opt) => (
+                  {(isYouTube ? YOUTUBE_COMMENT_SORTS : COMMENT_SORTS).map((opt) => (
                     <button
                       key={opt.value}
                       type="button"
@@ -681,7 +888,9 @@ export function ThreadDrawer({
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] text-[var(--sf-accent)] hover:underline underline-offset-4"
                   >
-                    <span>Read discussion on {isX ? 'X' : 'Reddit'}</span>
+                    <span>
+                      Read discussion on {isYouTube ? 'YouTube' : isX ? 'X' : 'Reddit'}
+                    </span>
                     <ArrowUpRight className="w-3.5 h-3.5" />
                   </a>
                 </div>
@@ -689,18 +898,24 @@ export function ThreadDrawer({
             ) : comments.length === 0 ? (
               <div className="py-8 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-[12.5px] text-[var(--sf-text-muted)]">
                 <span>
-                  {isX
-                    ? 'No public replies loaded via Nitter for this post.'
-                    : 'No comments yet.'}
+                  {isYouTube
+                    ? ytCommentsDisabled
+                      ? 'Comments are disabled for this video.'
+                      : !ytApiKeyConfigured
+                        ? 'Add YOUTUBE_API_KEY in server environment variables to load YouTube comments inline.'
+                        : 'No comments loaded yet.'
+                    : isX
+                      ? 'No public replies loaded via Nitter for this post.'
+                      : 'No comments yet.'}
                 </span>
-                {isX && (
+                {(isX || isYouTube) && (
                   <a
                     href={externalPostUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1 text-[var(--sf-accent)] hover:underline underline-offset-4 whitespace-nowrap"
                   >
-                    <span>View thread on X</span>
+                    <span>{isYouTube ? 'View comments on YouTube' : 'View thread on X'}</span>
                     <ArrowUpRight className="w-3.5 h-3.5" />
                   </a>
                 )}
@@ -708,7 +923,12 @@ export function ThreadDrawer({
             ) : (
               <div className="divide-y divide-[var(--sf-border-subtle)]">
                 {comments.map((comment) => (
-                  <CommentNode key={comment.id} comment={comment} isX={isX} />
+                  <CommentNode
+                    key={comment.id}
+                    comment={comment}
+                    isX={isX}
+                    isYouTube={isYouTube}
+                  />
                 ))}
               </div>
             )}

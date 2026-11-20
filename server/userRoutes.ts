@@ -18,7 +18,7 @@ const VALID_FONTS = new Set([
 const VALID_DENSITIES = new Set(['comfortable', 'compact', 'card']);
 const VALID_SORTS = new Set(['best', 'hot', 'new', 'top', 'rising', 'controversial']);
 const VALID_TIMEFRAMES = new Set(['hour', 'day', 'week', 'month', 'year', 'all']);
-const VALID_SOURCES = new Set(['all', 'reddit', 'x']);
+const VALID_SOURCES = new Set(['all', 'reddit', 'x', 'youtube']);
 
 function getSessionSecret(): string {
   return (
@@ -214,6 +214,8 @@ async function loadFullUserState(userId: string) {
       subreddits: { orderBy: { position: 'asc' } },
       xAccounts: { orderBy: { position: 'asc' } },
       xTopics: { orderBy: { position: 'asc' } },
+      youtubeChannels: { orderBy: { position: 'asc' } },
+      youtubeTopics: { orderBy: { position: 'asc' } },
       savedPosts: { orderBy: { savedAt: 'desc' }, take: 200 },
       readPosts: { orderBy: { readAt: 'desc' }, take: 250 },
     },
@@ -232,6 +234,8 @@ async function loadFullUserState(userId: string) {
     subreddits: user.subreddits.map((s) => s.name),
     xAccounts: user.xAccounts.map((x) => x.handle),
     xTopics: user.xTopics.map((t) => t.topic),
+    youtubeChannels: user.youtubeChannels.map((c) => c.handle),
+    youtubeTopics: user.youtubeTopics.map((t) => t.topic),
     savedPosts: user.savedPosts.map((s) => s.payload),
     readPostIds: user.readPosts.map((r) => r.postId),
     preferences: {
@@ -513,6 +517,8 @@ export function registerUserRoutes(app: Express): void {
       const localSubreddits = sanitizeStringArray(body.subreddits, 100);
       const localXAccounts = sanitizeStringArray(body.xAccounts, 100);
       const localXTopics = sanitizeStringArray(body.xTopics, 100);
+      const localYoutubeChannels = sanitizeStringArray(body.youtubeChannels, 100);
+      const localYoutubeTopics = sanitizeStringArray(body.youtubeTopics, 100);
       const localReadIds = sanitizeIdArray(body.readPostIds, 250);
       const localSavedPosts = Array.isArray(body.savedPosts)
         ? body.savedPosts.slice(0, 100)
@@ -569,15 +575,43 @@ export function registerUserRoutes(app: Express): void {
             });
           }
 
+          if (localYoutubeChannels.length > 0) {
+            await tx.followedYoutubeChannel.createMany({
+              data: localYoutubeChannels.map((handle, position) => ({
+                userId,
+                handle,
+                position,
+              })),
+              skipDuplicates: true,
+            });
+          }
+
+          if (localYoutubeTopics.length > 0) {
+            await tx.followedYoutubeTopic.createMany({
+              data: localYoutubeTopics.map((topic, position) => ({
+                userId,
+                topic,
+                position,
+              })),
+              skipDuplicates: true,
+            });
+          }
+
           for (const post of localSavedPosts) {
             if (!post || typeof post.id !== 'string' || !post.id.trim()) continue;
+            const postSource =
+              post.source === 'x'
+                ? 'x'
+                : post.source === 'youtube'
+                  ? 'youtube'
+                  : 'reddit';
             await tx.savedPost.upsert({
               where: { userId_postId: { userId, postId: post.id.slice(0, 128) } },
               update: {},
               create: {
                 userId,
                 postId: post.id.slice(0, 128),
-                source: post.source === 'x' ? 'x' : 'reddit',
+                source: postSource,
                 payload: post,
               },
             });
@@ -620,6 +654,8 @@ export function registerUserRoutes(app: Express): void {
     const subreddits = sanitizeStringArray(req.body?.subreddits, 100);
     const xAccounts = sanitizeStringArray(req.body?.xAccounts, 100);
     const xTopics = sanitizeStringArray(req.body?.xTopics, 100);
+    const youtubeChannels = sanitizeStringArray(req.body?.youtubeChannels, 100);
+    const youtubeTopics = sanitizeStringArray(req.body?.youtubeTopics, 100);
 
     try {
       await prisma.$transaction(async (tx) => {
@@ -643,6 +679,22 @@ export function registerUserRoutes(app: Express): void {
         if (xTopics.length > 0) {
           await tx.followedTopic.createMany({
             data: xTopics.map((topic, position) => ({ userId, topic, position })),
+            skipDuplicates: true,
+          });
+        }
+
+        await tx.followedYoutubeChannel.deleteMany({ where: { userId } });
+        if (youtubeChannels.length > 0) {
+          await tx.followedYoutubeChannel.createMany({
+            data: youtubeChannels.map((handle, position) => ({ userId, handle, position })),
+            skipDuplicates: true,
+          });
+        }
+
+        await tx.followedYoutubeTopic.deleteMany({ where: { userId } });
+        if (youtubeTopics.length > 0) {
+          await tx.followedYoutubeTopic.createMany({
+            data: youtubeTopics.map((topic, position) => ({ userId, topic, position })),
             skipDuplicates: true,
           });
         }
@@ -712,7 +764,12 @@ export function registerUserRoutes(app: Express): void {
         create: {
           userId,
           postId,
-          source: post.source === 'x' ? 'x' : 'reddit',
+          source:
+            post.source === 'x'
+              ? 'x'
+              : post.source === 'youtube'
+                ? 'youtube'
+                : 'reddit',
           payload: post,
         },
       });

@@ -295,26 +295,40 @@ export async function lookupXProfile(
   }
 }
 
+function computeUnifiedEngagement(post: RedditPost): number {
+  if (post.source === 'youtube') {
+    const viewScore = post.views ? Math.log10(Math.max(10, post.views)) * 95 : 0;
+    const likeScore = Math.min(2000, (post.score || 0) * 0.12);
+    return viewScore + likeScore + post.numComments * 1.2 + 25;
+  }
+  return post.score + (post.reposts ?? 0) * 2 + post.numComments * 1.5 + 15;
+}
+
 export function mergeAndRankFeeds(
   redditPosts: RedditPost[],
   xPosts: RedditPost[],
-  sort: SortOption
+  sort: SortOption,
+  youtubePosts: RedditPost[] = []
 ): RedditPost[] {
-  const combined = [...redditPosts, ...xPosts];
+  const combined = [...redditPosts, ...xPosts, ...youtubePosts];
   const nowSec = Math.floor(Date.now() / 1000);
 
   if (sort === 'new') {
     return combined.sort((a, b) => b.createdUtc - a.createdUtc);
   }
   if (sort === 'top') {
-    return combined.sort((a, b) => b.score - a.score || b.createdUtc - a.createdUtc);
+    return combined.sort((a, b) => {
+      const scoreA = a.source === 'youtube' ? Math.max(a.score, Math.round((a.views ?? 0) / 30)) : a.score;
+      const scoreB = b.source === 'youtube' ? Math.max(b.score, Math.round((b.views ?? 0) / 30)) : b.score;
+      return scoreB - scoreA || b.createdUtc - a.createdUtc;
+    });
   }
   if (sort === 'rising') {
     return combined.sort((a, b) => {
       const ageA = Math.max(0.25, (nowSec - a.createdUtc) / 3600);
       const ageB = Math.max(0.25, (nowSec - b.createdUtc) / 3600);
-      const velA = (a.score + (a.reposts ?? 0) * 2 + a.numComments * 2) / Math.pow(ageA + 0.5, 1.3);
-      const velB = (b.score + (b.reposts ?? 0) * 2 + b.numComments * 2) / Math.pow(ageB + 0.5, 1.3);
+      const velA = computeUnifiedEngagement(a) / Math.pow(ageA + 0.5, 1.3);
+      const velB = computeUnifiedEngagement(b) / Math.pow(ageB + 0.5, 1.3);
       return velB - velA;
     });
   }
@@ -325,12 +339,12 @@ export function mergeAndRankFeeds(
       return ratioB - ratioA || b.numComments - a.numComments;
     });
   }
-  // best / hot: recency-weighted score blend across both platforms
+  // best / hot: recency-weighted score blend across all platforms
   return combined.sort((a, b) => {
     const ageA = Math.max(0.5, (nowSec - a.createdUtc) / 3600);
     const ageB = Math.max(0.5, (nowSec - b.createdUtc) / 3600);
-    const sA = (a.score + (a.reposts ?? 0) * 2 + a.numComments * 1.5 + 15) / Math.pow(ageA + 2, 1.15);
-    const sB = (b.score + (b.reposts ?? 0) * 2 + b.numComments * 1.5 + 15) / Math.pow(ageB + 2, 1.15);
+    const sA = computeUnifiedEngagement(a) / Math.pow(ageA + 2, 1.15);
+    const sB = computeUnifiedEngagement(b) / Math.pow(ageB + 2, 1.15);
     return sB - sA;
   });
 }

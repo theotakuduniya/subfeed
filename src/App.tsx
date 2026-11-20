@@ -32,6 +32,14 @@ import {
   sanitizeXTopic,
   switchNitterInstance,
 } from './lib/x';
+import {
+  DEFAULT_YOUTUBE_CHANNELS,
+  DEFAULT_YOUTUBE_TOPICS,
+  fetchYoutubeFeed,
+  getCachedYoutubeFeed,
+  sanitizeYoutubeHandle,
+  sanitizeYoutubeTopic,
+} from './lib/youtube';
 import { cacheClearAll } from './lib/cache';
 import {
   bootstrapUserState,
@@ -61,6 +69,9 @@ const STORAGE_KEYS = {
   subreddits: 'subfeed:subreddits',
   xAccounts: 'subfeed:xAccounts',
   xTopics: 'subfeed:xTopics',
+  youtubeChannels: 'subfeed:youtubeChannels',
+  youtubeTopics: 'subfeed:youtubeTopics',
+  hideYoutubeShorts: 'subfeed:hideYoutubeShorts',
   saved: 'subfeed:saved',
   read: 'subfeed:read',
   theme: 'subfeed:theme',
@@ -74,7 +85,7 @@ const STORAGE_KEYS = {
 
 const VALID_SORTS: SortOption[] = ['best', 'hot', 'new', 'top', 'rising', 'controversial'];
 const VALID_TIMEFRAMES: TimeframeOption[] = ['hour', 'day', 'week', 'month', 'year', 'all'];
-const VALID_SOURCES: SourceFilter[] = ['all', 'reddit', 'x'];
+const VALID_SOURCES: SourceFilter[] = ['all', 'reddit', 'x', 'youtube'];
 const VALID_THEMES: ThemeOption[] = ['dark', 'light', 'mocha', 'glass'];
 const VALID_FONTS: FontOption[] = [
   'geist-mono',
@@ -125,6 +136,42 @@ function readStoredXTopics(): string[] {
     // Ignore storage errors
   }
   return DEFAULT_X_TOPICS;
+}
+
+function readStoredYoutubeChannels(): string[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.youtubeChannels);
+    if (!raw) return DEFAULT_YOUTUBE_CHANNELS;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.map((item) => sanitizeYoutubeHandle(String(item))).filter(Boolean);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  return DEFAULT_YOUTUBE_CHANNELS;
+}
+
+function readStoredYoutubeTopics(): string[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.youtubeTopics);
+    if (!raw) return DEFAULT_YOUTUBE_TOPICS;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.map((item) => sanitizeYoutubeTopic(String(item))).filter(Boolean);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  return DEFAULT_YOUTUBE_TOPICS;
+}
+
+function readStoredHideYoutubeShorts(): boolean {
+  try {
+    return localStorage.getItem(STORAGE_KEYS.hideYoutubeShorts) === '1';
+  } catch {
+    return false;
+  }
 }
 
 function readStoredSavedPosts(): RedditPost[] {
@@ -227,6 +274,13 @@ export default function App() {
   const [subreddits, setSubreddits] = useState<string[]>(readStoredSubreddits);
   const [xAccounts, setXAccounts] = useState<string[]>(readStoredXAccounts);
   const [xTopics, setXTopics] = useState<string[]>(readStoredXTopics);
+  const [youtubeChannels, setYoutubeChannels] = useState<string[]>(
+    readStoredYoutubeChannels
+  );
+  const [youtubeTopics, setYoutubeTopics] = useState<string[]>(readStoredYoutubeTopics);
+  const [hideYoutubeShorts, setHideYoutubeShorts] = useState<boolean>(
+    readStoredHideYoutubeShorts
+  );
   const [savedPosts, setSavedPosts] = useState<RedditPost[]>(readStoredSavedPosts);
   const [readPostIds, setReadPostIds] = useState<string[]>(readStoredReadPostIds);
   const [theme, setTheme] = useState<ThemeOption>(readStoredTheme);
@@ -279,6 +333,8 @@ export default function App() {
     subreddits,
     xAccounts,
     xTopics,
+    youtubeChannels,
+    youtubeTopics,
     readPostIds,
     savedPosts,
     theme,
@@ -293,6 +349,8 @@ export default function App() {
     subreddits,
     xAccounts,
     xTopics,
+    youtubeChannels,
+    youtubeTopics,
     readPostIds,
     savedPosts,
     theme,
@@ -340,6 +398,8 @@ export default function App() {
       subreddits: snapshot.subreddits,
       xAccounts: snapshot.xAccounts,
       xTopics: snapshot.xTopics,
+      youtubeChannels: snapshot.youtubeChannels,
+      youtubeTopics: snapshot.youtubeTopics,
       savedPosts: snapshot.savedPosts,
       readPostIds: snapshot.readPostIds,
       preferences: {
@@ -357,6 +417,12 @@ export default function App() {
         setSubreddits(cloudState.subreddits);
         setXAccounts(cloudState.xAccounts);
         setXTopics(Array.isArray(cloudState.xTopics) ? cloudState.xTopics : []);
+        setYoutubeChannels(
+          Array.isArray(cloudState.youtubeChannels) ? cloudState.youtubeChannels : []
+        );
+        setYoutubeTopics(
+          Array.isArray(cloudState.youtubeTopics) ? cloudState.youtubeTopics : []
+        );
         setSavedPosts(cloudState.savedPosts);
         setReadPostIds(cloudState.readPostIds);
         setTheme(cloudState.preferences.theme);
@@ -433,6 +499,36 @@ export default function App() {
 
   useEffect(() => {
     try {
+      localStorage.setItem(
+        STORAGE_KEYS.youtubeChannels,
+        JSON.stringify(youtubeChannels)
+      );
+    } catch {
+      // Ignore
+    }
+  }, [youtubeChannels]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.youtubeTopics, JSON.stringify(youtubeTopics));
+    } catch {
+      // Ignore
+    }
+  }, [youtubeTopics]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        STORAGE_KEYS.hideYoutubeShorts,
+        hideYoutubeShorts ? '1' : '0'
+      );
+    } catch {
+      // Ignore
+    }
+  }, [hideYoutubeShorts]);
+
+  useEffect(() => {
+    try {
       localStorage.setItem(STORAGE_KEYS.saved, JSON.stringify(savedPosts));
     } catch {
       // Ignore
@@ -496,10 +592,12 @@ export default function App() {
         subreddits,
         xAccounts,
         xTopics,
+        youtubeChannels,
+        youtubeTopics,
       }).catch((err) => console.error('Failed to sync feeds:', err));
     }, 350);
     return () => clearTimeout(timer);
-  }, [user, cloudReady, subreddits, xAccounts, xTopics]);
+  }, [user, cloudReady, subreddits, xAccounts, xTopics, youtubeChannels, youtubeTopics]);
 
   // Sync display & feed preferences to PostgreSQL when signed in
   useEffect(() => {
@@ -523,21 +621,52 @@ export default function App() {
 
   const activeSubreddits = useMemo(() => {
     if (activeView.type === 'subreddit') return [activeView.name];
-    if (activeView.type === 'all' && sourceFilter !== 'x') return subreddits;
+    if (
+      activeView.type === 'all' &&
+      (sourceFilter === 'all' || sourceFilter === 'reddit')
+    ) {
+      return subreddits;
+    }
     return [];
   }, [activeView, sourceFilter, subreddits]);
 
   const activeXHandles = useMemo(() => {
     if (activeView.type === 'x') return [activeView.handle];
-    if (activeView.type === 'all' && sourceFilter !== 'reddit') return xAccounts;
+    if (activeView.type === 'all' && (sourceFilter === 'all' || sourceFilter === 'x')) {
+      return xAccounts;
+    }
     return [];
   }, [activeView, sourceFilter, xAccounts]);
 
   const activeXTopics = useMemo(() => {
     if (activeView.type === 'topic') return [activeView.topic];
-    if (activeView.type === 'all' && sourceFilter !== 'reddit') return xTopics;
+    if (activeView.type === 'all' && (sourceFilter === 'all' || sourceFilter === 'x')) {
+      return xTopics;
+    }
     return [];
   }, [activeView, sourceFilter, xTopics]);
+
+  const activeYoutubeChannels = useMemo(() => {
+    if (activeView.type === 'youtube') return [activeView.handle];
+    if (
+      activeView.type === 'all' &&
+      (sourceFilter === 'all' || sourceFilter === 'youtube')
+    ) {
+      return youtubeChannels;
+    }
+    return [];
+  }, [activeView, sourceFilter, youtubeChannels]);
+
+  const activeYoutubeTopics = useMemo(() => {
+    if (activeView.type === 'yt-topic') return [activeView.topic];
+    if (
+      activeView.type === 'all' &&
+      (sourceFilter === 'all' || sourceFilter === 'youtube')
+    ) {
+      return youtubeTopics;
+    }
+    return [];
+  }, [activeView, sourceFilter, youtubeTopics]);
 
   // Fetch unified or single-source feed with instant client caching & forceRefresh support
   useEffect(() => {
@@ -558,8 +687,10 @@ export default function App() {
     }
 
     const hasXSources = activeXHandles.length > 0 || activeXTopics.length > 0;
+    const hasYtSources =
+      activeYoutubeChannels.length > 0 || activeYoutubeTopics.length > 0;
 
-    if (activeSubreddits.length === 0 && !hasXSources) {
+    if (activeSubreddits.length === 0 && !hasXSources && !hasYtSources) {
       setPosts([]);
       setAfterCursor(null);
       setLoading(false);
@@ -571,18 +702,29 @@ export default function App() {
     if (!isManualRefresh) {
       const needReddit = activeSubreddits.length > 0;
       const needX = hasXSources;
+      const needYt = hasYtSources;
       const cachedReddit = needReddit
         ? getCachedFeed(activeSubreddits, sort, timeframe)
         : null;
       const cachedX = needX
         ? getCachedXFeed(activeXHandles, activeXTopics, sort, timeframe)
         : null;
+      const cachedYt = needYt
+        ? getCachedYoutubeFeed(
+            activeYoutubeChannels,
+            activeYoutubeTopics,
+            sort,
+            timeframe,
+            hideYoutubeShorts
+          )
+        : null;
 
-      if ((!needReddit || cachedReddit) && (!needX || cachedX)) {
+      if ((!needReddit || cachedReddit) && (!needX || cachedX) && (!needYt || cachedYt)) {
         const merged = mergeAndRankFeeds(
           cachedReddit?.posts ?? [],
           cachedX?.posts ?? [],
-          sort
+          sort,
+          cachedYt?.posts ?? []
         );
         setPosts(merged);
         setAfterCursor(cachedReddit?.after ?? null);
@@ -611,7 +753,7 @@ export default function App() {
             forceRefresh: isManualRefresh,
             signal: controller.signal,
           })
-        : Promise.resolve({ posts: [], after: null });
+        : Promise.resolve({ posts: [] as RedditPost[], after: null as string | null });
 
     const xPromise = hasXSources
       ? fetchXFeed({
@@ -623,24 +765,44 @@ export default function App() {
           forceRefresh: isManualRefresh,
           signal: controller.signal,
         })
-      : Promise.resolve({ posts: [] as RedditPost[], after: null, instance: null as string | null });
+      : Promise.resolve({
+          posts: [] as RedditPost[],
+          after: null as string | null,
+          instance: null as string | null,
+        });
 
-    Promise.allSettled([redditPromise, xPromise])
-      .then(([redditRes, xRes]) => {
+    const youtubePromise = hasYtSources
+      ? fetchYoutubeFeed({
+          channels: activeYoutubeChannels,
+          topics: activeYoutubeTopics,
+          sort,
+          timeframe,
+          hideShorts: hideYoutubeShorts,
+          limit: 25,
+          forceRefresh: isManualRefresh,
+          signal: controller.signal,
+        })
+      : Promise.resolve({ posts: [] as RedditPost[], after: null as string | null });
+
+    Promise.allSettled([redditPromise, xPromise, youtubePromise])
+      .then(([redditRes, xRes, ytRes]) => {
         if (controller.signal.aborted) return;
 
         const redditOk = redditRes.status === 'fulfilled';
         const xOk = xRes.status === 'fulfilled';
+        const ytOk = ytRes.status === 'fulfilled';
         const xFailedReason = xRes.status === 'rejected' ? xRes.reason : null;
+        const ytFailedReason = ytRes.status === 'rejected' ? ytRes.reason : null;
         const isXError =
           xFailedReason instanceof XFeedError ||
           activeView.type === 'x' ||
           activeView.type === 'topic' ||
           (activeView.type === 'all' && sourceFilter === 'x');
 
-        if (!redditOk && !xOk) {
+        if (!redditOk && !xOk && !ytOk) {
           const msg =
             (xFailedReason instanceof Error && xFailedReason.message) ||
+            (ytFailedReason instanceof Error && ytFailedReason.message) ||
             (redditRes.reason instanceof Error && redditRes.reason.message) ||
             'Unable to load posts.';
           setError(msg);
@@ -674,6 +836,19 @@ export default function App() {
           setAfterCursor(null);
           return;
         }
+        if ((activeView.type === 'youtube' || activeView.type === 'yt-topic') && !ytOk) {
+          setError(
+            ytFailedReason instanceof Error
+              ? ytFailedReason.message
+              : activeView.type === 'yt-topic'
+                ? 'Unable to load YouTube topic right now.'
+                : 'Unable to load YouTube channel right now.'
+          );
+          setErrorIsNitter(false);
+          setPosts([]);
+          setAfterCursor(null);
+          return;
+        }
 
         if (xOk && xRes.value.instance) {
           setActiveNitterInstance(xRes.value.instance);
@@ -681,7 +856,8 @@ export default function App() {
 
         const redditPosts = redditOk ? redditRes.value.posts : [];
         const xPosts = xOk ? xRes.value.posts : [];
-        const merged = mergeAndRankFeeds(redditPosts, xPosts, sort);
+        const ytPosts = ytOk ? ytRes.value.posts : [];
+        const merged = mergeAndRankFeeds(redditPosts, xPosts, sort, ytPosts);
 
         setError(null);
         setErrorIsNitter(false);
@@ -698,7 +874,19 @@ export default function App() {
       });
 
     return () => controller.abort();
-  }, [activeView, activeSubreddits, activeXHandles, activeXTopics, sort, timeframe, refreshNonce]);
+  }, [
+    activeView,
+    activeSubreddits,
+    activeXHandles,
+    activeXTopics,
+    activeYoutubeChannels,
+    activeYoutubeTopics,
+    hideYoutubeShorts,
+    sort,
+    timeframe,
+    refreshNonce,
+    sourceFilter,
+  ]);
 
   const loadNitterHealth = useCallback(async (forceRefresh = false) => {
     setCheckingNitterHealth(true);
@@ -761,7 +949,9 @@ export default function App() {
     activeView.type === 'saved' ||
     (activeSubreddits.length === 0 &&
       activeXHandles.length === 0 &&
-      activeXTopics.length === 0) ||
+      activeXTopics.length === 0 &&
+      activeYoutubeChannels.length === 0 &&
+      activeYoutubeTopics.length === 0) ||
     Boolean(selectedPost) ||
     showSettings ||
     showProfile ||
@@ -793,7 +983,7 @@ export default function App() {
         const seen = new Set(prev.map((p) => p.id));
         const next = res.posts.filter((p) => !seen.has(p.id));
         const merged = [...prev, ...next];
-        const redditOnly = merged.filter((p) => p.source !== 'x');
+        const redditOnly = merged.filter((p) => p.source !== 'x' && p.source !== 'youtube');
         updateCachedFeed(activeSubreddits, sort, timeframe, {
           posts: redditOnly,
           after: res.after,
@@ -819,6 +1009,7 @@ export default function App() {
         p.subreddit.toLowerCase().includes(q) ||
         p.author.toLowerCase().includes(q) ||
         (p.authorName && p.authorName.toLowerCase().includes(q)) ||
+        (p.channelTitle && p.channelTitle.toLowerCase().includes(q)) ||
         p.domain.toLowerCase().includes(q) ||
         (p.flair && p.flair.toLowerCase().includes(q))
     );
@@ -852,6 +1043,26 @@ export default function App() {
       return [...prev, clean];
     });
     setActiveView({ type: 'topic', topic: clean });
+  }, []);
+
+  const handleAddYoutubeChannel = useCallback((rawHandle: string) => {
+    const clean = sanitizeYoutubeHandle(rawHandle);
+    if (!clean) return;
+    setYoutubeChannels((prev) => {
+      if (prev.some((h) => h.toLowerCase() === clean.toLowerCase())) return prev;
+      return [...prev, clean];
+    });
+    setActiveView({ type: 'youtube', handle: clean });
+  }, []);
+
+  const handleAddYoutubeTopic = useCallback((rawTopic: string) => {
+    const clean = sanitizeYoutubeTopic(rawTopic);
+    if (!clean) return;
+    setYoutubeTopics((prev) => {
+      if (prev.some((t) => t.toLowerCase() === clean.toLowerCase())) return prev;
+      return [...prev, clean];
+    });
+    setActiveView({ type: 'yt-topic', topic: clean });
   }, []);
 
   const handleAddPack = useCallback((packSubs: string[]) => {
@@ -900,6 +1111,36 @@ export default function App() {
       );
       if (
         activeView.type === 'topic' &&
+        activeView.topic.toLowerCase() === topic.toLowerCase()
+      ) {
+        setActiveView({ type: 'all' });
+      }
+    },
+    [activeView]
+  );
+
+  const handleRemoveYoutubeChannel = useCallback(
+    (handle: string) => {
+      setYoutubeChannels((prev) =>
+        prev.filter((h) => h.toLowerCase() !== handle.toLowerCase())
+      );
+      if (
+        activeView.type === 'youtube' &&
+        activeView.handle.toLowerCase() === handle.toLowerCase()
+      ) {
+        setActiveView({ type: 'all' });
+      }
+    },
+    [activeView]
+  );
+
+  const handleRemoveYoutubeTopic = useCallback(
+    (topic: string) => {
+      setYoutubeTopics((prev) =>
+        prev.filter((t) => t.toLowerCase() !== topic.toLowerCase())
+      );
+      if (
+        activeView.type === 'yt-topic' &&
         activeView.topic.toLowerCase() === topic.toLowerCase()
       ) {
         setActiveView({ type: 'all' });
@@ -990,6 +1231,16 @@ export default function App() {
       return [...prev, clean];
     });
     setActiveView({ type: 'x', handle: clean });
+  }, []);
+
+  const handleSelectYoutubeChannelFromPost = useCallback((handle: string) => {
+    const clean = sanitizeYoutubeHandle(handle);
+    if (!clean) return;
+    setYoutubeChannels((prev) => {
+      if (prev.some((h) => h.toLowerCase() === clean.toLowerCase())) return prev;
+      return [...prev, clean];
+    });
+    setActiveView({ type: 'youtube', handle: clean });
   }, []);
 
   // Keyboard navigation
@@ -1115,9 +1366,18 @@ export default function App() {
           ? `@${activeView.handle}`
           : activeView.type === 'topic'
             ? `#${activeView.topic}`
-            : `r/${activeView.name}`;
+            : activeView.type === 'youtube'
+              ? `yt/@${activeView.handle}`
+              : activeView.type === 'yt-topic'
+                ? `yt#${activeView.topic}`
+                : `r/${activeView.name}`;
 
-  const totalFollowed = subreddits.length + xAccounts.length + xTopics.length;
+  const totalFollowed =
+    subreddits.length +
+    xAccounts.length +
+    xTopics.length +
+    youtubeChannels.length +
+    youtubeTopics.length;
   const userInitial = (user?.displayName || user?.email || 'M')
     .trim()
     .slice(0, 1)
@@ -1134,6 +1394,8 @@ export default function App() {
           subreddits={subreddits}
           xAccounts={xAccounts}
           xTopics={xTopics}
+          youtubeChannels={youtubeChannels}
+          youtubeTopics={youtubeTopics}
           activeView={activeView}
           savedCount={savedPosts.length}
           user={user}
@@ -1151,6 +1413,10 @@ export default function App() {
           onRemoveXAccount={handleRemoveXAccount}
           onAddXTopic={handleAddXTopic}
           onRemoveXTopic={handleRemoveXTopic}
+          onAddYoutubeChannel={handleAddYoutubeChannel}
+          onRemoveYoutubeChannel={handleRemoveYoutubeChannel}
+          onAddYoutubeTopic={handleAddYoutubeTopic}
+          onRemoveYoutubeTopic={handleRemoveYoutubeTopic}
           onOpenProfile={() => setShowProfile(true)}
           onOpenSettings={() => setShowSettings(true)}
           onOpenShortcuts={() => setShowShortcuts(true)}
@@ -1330,7 +1596,7 @@ export default function App() {
                   Your feed list is empty
                 </h2>
                 <p className="mt-2 text-[13px] leading-relaxed text-[var(--sf-text-muted)]">
-                  Add any subreddit (r/...), X account (@...), or X topic (#...) from the sidebar, or load a starter collection below.
+                  Add any subreddit (r/...), X account (@...), X topic (#...), YouTube channel (yt/...), or YouTube topic (yt#...) from the sidebar, or load a starter collection below.
                 </p>
 
                 <div className="mt-6 flex flex-wrap items-center justify-center gap-2.5">
@@ -1457,6 +1723,24 @@ export default function App() {
                       Remove #{activeView.topic}
                     </button>
                   )}
+                  {activeView.type === 'youtube' && (
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveYoutubeChannel(activeView.handle)}
+                      className="px-4 py-2 text-[12.5px] text-[var(--sf-text-secondary)] border border-[var(--sf-border)] rounded-md hover:text-[var(--sf-text)] hover:border-[var(--sf-border-strong)] transition-colors"
+                    >
+                      Remove yt/@{activeView.handle}
+                    </button>
+                  )}
+                  {activeView.type === 'yt-topic' && (
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveYoutubeTopic(activeView.topic)}
+                      className="px-4 py-2 text-[12.5px] text-[var(--sf-text-secondary)] border border-[var(--sf-border)] rounded-md hover:text-[var(--sf-text)] hover:border-[var(--sf-border-strong)] transition-colors"
+                    >
+                      Remove yt#{activeView.topic}
+                    </button>
+                  )}
                 </div>
 
                 {(errorIsNitter ||
@@ -1577,7 +1861,11 @@ export default function App() {
                         ? `Nitter returned no recent posts for @${activeView.handle}. Try switching instances or check that the account is public.`
                         : activeView.type === 'topic'
                           ? `Nitter returned no recent posts for #${activeView.topic}. Try switching instances or following a broader keyword.`
-                          : 'Try adjusting the sort order or timeframe in Settings.'}
+                          : activeView.type === 'youtube'
+                            ? `No recent videos found for yt/@${activeView.handle}. Verify the handle or try showing Shorts in Settings.`
+                            : activeView.type === 'yt-topic'
+                              ? `No videos matched yt#${activeView.topic}. Try another keyword or adjust timeframe in Settings.`
+                              : 'Try adjusting the sort order or timeframe in Settings.'}
                 </p>
                 {filterQuery ? (
                   <button
@@ -1629,6 +1917,7 @@ export default function App() {
                         onOpen={(p) => handleOpenPost(p, idx)}
                         onSelectSubreddit={handleSelectSubredditFromPost}
                         onSelectXAccount={handleSelectXAccountFromPost}
+                        onSelectYoutubeChannel={handleSelectYoutubeChannelFromPost}
                         onToggleSave={handleToggleSave}
                       />
                     ))}
@@ -1648,6 +1937,7 @@ export default function App() {
                         onOpen={(p) => handleOpenPost(p, idx)}
                         onSelectSubreddit={handleSelectSubredditFromPost}
                         onSelectXAccount={handleSelectXAccountFromPost}
+                        onSelectYoutubeChannel={handleSelectYoutubeChannelFromPost}
                         onToggleSave={handleToggleSave}
                       />
                     ))}
@@ -1658,6 +1948,8 @@ export default function App() {
                 {activeView.type !== 'saved' &&
                   activeView.type !== 'x' &&
                   activeView.type !== 'topic' &&
+                  activeView.type !== 'youtube' &&
+                  activeView.type !== 'yt-topic' &&
                   afterCursor &&
                   !filterQuery && (
                     <div className="py-8 flex justify-center">
@@ -1687,6 +1979,7 @@ export default function App() {
         onToggleSave={handleToggleSave}
         onSelectSubreddit={handleSelectSubredditFromPost}
         onSelectXAccount={handleSelectXAccountFromPost}
+        onSelectYoutubeChannel={handleSelectYoutubeChannelFromPost}
         onSwitchNitterInstance={() => handleSwitchNitterInstance()}
       />
 
@@ -1696,6 +1989,7 @@ export default function App() {
         sort={sort}
         timeframe={timeframe}
         sourceFilter={sourceFilter}
+        hideYoutubeShorts={hideYoutubeShorts}
         density={density}
         theme={theme}
         font={font}
@@ -1708,6 +2002,7 @@ export default function App() {
         onChangeSort={setSort}
         onChangeTimeframe={setTimeframe}
         onChangeSourceFilter={setSourceFilter}
+        onChangeHideYoutubeShorts={setHideYoutubeShorts}
         onChangeDensity={setDensity}
         onChangeTheme={setTheme}
         onChangeFont={setFont}
@@ -1731,6 +2026,8 @@ export default function App() {
         subredditCount={subreddits.length}
         xAccountCount={xAccounts.length}
         xTopicCount={xTopics.length}
+        youtubeChannelCount={youtubeChannels.length}
+        youtubeTopicCount={youtubeTopics.length}
         savedCount={savedPosts.length}
         readCount={readPostIds.length}
         onSignInGoogle={async () => {
@@ -1781,7 +2078,7 @@ export default function App() {
                 ['Esc', 'Close thread or dialog'],
                 ['b', 'Toggle sidebar'],
                 [',', 'Open settings'],
-                ['a', 'Add r/, @handle, or #topic'],
+                ['a', 'Add r/, @, #, yt/, or yt#'],
                 ['/', 'Search current posts'],
                 ['r', 'Refresh feed'],
                 ['?', 'Toggle this menu'],

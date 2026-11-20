@@ -18,6 +18,8 @@ interface ProfileModalProps {
   subredditCount: number;
   xAccountCount: number;
   xTopicCount: number;
+  youtubeChannelCount: number;
+  youtubeTopicCount: number;
   savedCount: number;
   readCount: number;
   onSignInGoogle: () => Promise<void>;
@@ -57,6 +59,8 @@ export function ProfileModal({
   subredditCount,
   xAccountCount,
   xTopicCount,
+  youtubeChannelCount,
+  youtubeTopicCount,
   savedCount,
   readCount,
   onSignInGoogle,
@@ -193,9 +197,9 @@ export function ProfileModal({
                   </div>
                 </div>
                 <div className="p-3 rounded-lg border border-[var(--sf-border)] bg-[var(--sf-surface)]">
-                  <div className="text-[11px] text-[var(--sf-text-muted)]">X Feeds</div>
+                  <div className="text-[11px] text-[var(--sf-text-muted)]">X & YouTube</div>
                   <div className="mt-1 text-[16px] font-semibold tabular-nums text-[var(--sf-text)]">
-                    {xAccountCount + xTopicCount}
+                    {xAccountCount + xTopicCount + youtubeChannelCount + youtubeTopicCount}
                   </div>
                 </div>
                 <div className="p-3 rounded-lg border border-[var(--sf-border)] bg-[var(--sf-surface)]">
@@ -265,7 +269,7 @@ export function ProfileModal({
                   Sign in to minisocial
                 </h3>
                 <p className="text-[12.5px] leading-relaxed text-[var(--sf-text-muted)]">
-                  Keep your followed subreddits, X accounts, saved posts, read history, and display settings backed up to your account.
+                  Keep your followed subreddits, X accounts, YouTube channels, saved posts, read history, and display settings backed up to your account.
                 </p>
               </div>
 
@@ -290,7 +294,7 @@ export function ProfileModal({
               {/* Guest local read-history utility */}
               <div className="pt-3 border-t border-[var(--sf-border-subtle)] flex items-center justify-between gap-2 text-[11.5px] text-[var(--sf-text-muted)]">
                 <span>
-                  {subredditCount + xAccountCount + xTopicCount} feeds · {savedCount} saved · {readCount} read locally
+                  {subredditCount + xAccountCount + xTopicCount + youtubeChannelCount + youtubeTopicCount} feeds · {savedCount} saved · {readCount} read locally
                 </span>
                 {readCount > 0 && (
                   <button

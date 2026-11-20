@@ -16,15 +16,17 @@ export type FontOption =
   | 'space-grotesk'
   | 'jetbrains-mono';
 
-export type PostSource = 'reddit' | 'x';
+export type PostSource = 'reddit' | 'x' | 'youtube';
 
-export type SourceFilter = 'all' | 'reddit' | 'x';
+export type SourceFilter = 'all' | 'reddit' | 'x' | 'youtube';
 
 export type ActiveView =
   | { type: 'all' }
   | { type: 'subreddit'; name: string }
   | { type: 'x'; handle: string }
   | { type: 'topic'; topic: string }
+  | { type: 'youtube'; handle: string }
+  | { type: 'yt-topic'; topic: string }
   | { type: 'saved' };
 
 export interface QuotedPost {
@@ -65,6 +67,11 @@ export interface RedditPost {
   isRetweet?: boolean;
   retweetedBy?: string | null;
   quotedPost?: QuotedPost | null;
+  videoId?: string | null;
+  durationSeconds?: number | null;
+  isShort?: boolean;
+  channelId?: string | null;
+  channelTitle?: string | null;
 }
 
 export interface RedditComment {
@@ -93,6 +100,16 @@ export interface XProfilePreview {
   description: string;
   avatarUrl: string | null;
   verified: boolean;
+}
+
+export interface YoutubeChannelPreview {
+  handle: string;
+  channelId: string;
+  uploadsPlaylistId?: string;
+  title: string;
+  subscribers: number;
+  description: string;
+  avatarUrl: string | null;
 }
 
 export interface SubredditItem {
