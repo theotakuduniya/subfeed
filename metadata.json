@@ -1,0 +1,6 @@
+{
+  "name": "Subfeed",
+  "description": "A minimal Geist Mono Reddit reader for browsing top, new, best, hot, and rising posts across your custom list of subreddits.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

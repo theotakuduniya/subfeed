@@ -1,0 +1,228 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+@custom-variant mocha (&:where([data-theme="mocha"], [data-theme="mocha"] *));
+@custom-variant glass (&:where([data-theme="glass"], [data-theme="glass"] *));
+
+@theme {
+  --font-sans: var(--app-font, "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* Font family presets */
+:root,
+html[data-font="geist-mono"] {
+  --app-font: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+html[data-font="geist"] {
+  --app-font: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+html[data-font="inter"] {
+  --app-font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+html[data-font="jakarta"] {
+  --app-font: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+html[data-font="space-grotesk"] {
+  --app-font: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+html[data-font="jetbrains-mono"] {
+  --app-font: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* Font preview utilities for Settings selector */
+.font-preview-geist-mono {
+  font-family: "Geist Mono", ui-monospace, monospace;
+}
+.font-preview-geist {
+  font-family: "Geist", -apple-system, BlinkMacSystemFont, sans-serif;
+}
+.font-preview-inter {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+}
+.font-preview-jakarta {
+  font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+}
+.font-preview-space-grotesk {
+  font-family: "Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif;
+}
+.font-preview-jetbrains-mono {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}
+
+/* Theme tokens — Light (default :root) */
+:root {
+  --sf-bg: #fafafa;
+  --sf-sidebar: #f4f4f5;
+  --sf-header: #fafafa;
+  --sf-surface: #ffffff;
+  --sf-surface-elevated: #ffffff;
+  --sf-surface-muted: #f4f4f5;
+  --sf-sheet: #fafafa;
+  --sf-modal: #fafafa;
+  --sf-hover: rgba(228, 228, 231, 0.45);
+  --sf-active: rgba(228, 228, 231, 0.85);
+  --sf-border: #e4e4e7;
+  --sf-border-subtle: rgba(228, 228, 231, 0.8);
+  --sf-border-strong: #a1a1aa;
+  --sf-text: #111113;
+  --sf-text-secondary: #52525b;
+  --sf-text-muted: #71717a;
+  --sf-accent: #d93a00;
+  --sf-accent-soft: rgba(255, 69, 0, 0.12);
+  --sf-btn-active-bg: #09090b;
+  --sf-btn-active-text: #ffffff;
+  --sf-btn-active-border: #09090b;
+  --sf-scrollbar: rgba(113, 113, 122, 0.25);
+  --sf-scrollbar-hover: rgba(113, 113, 122, 0.45);
+}
+
+/* Theme tokens — Dark */
+html.dark,
+html[data-theme="dark"] {
+  --sf-bg: #09090b;
+  --sf-sidebar: #0d0d0f;
+  --sf-header: #09090b;
+  --sf-surface: #101013;
+  --sf-surface-elevated: #141417;
+  --sf-surface-muted: #16161a;
+  --sf-sheet: #0b0b0d;
+  --sf-modal: #111114;
+  --sf-hover: rgba(39, 39, 42, 0.42);
+  --sf-active: rgba(39, 39, 42, 0.82);
+  --sf-border: rgba(39, 39, 42, 0.9);
+  --sf-border-subtle: rgba(39, 39, 42, 0.72);
+  --sf-border-strong: #52525b;
+  --sf-text: #f4f4f5;
+  --sf-text-secondary: #a1a1aa;
+  --sf-text-muted: #71717a;
+  --sf-accent: #ff571a;
+  --sf-accent-soft: rgba(255, 69, 0, 0.16);
+  --sf-btn-active-bg: #f4f4f5;
+  --sf-btn-active-text: #09090b;
+  --sf-btn-active-border: #f4f4f5;
+  --sf-scrollbar: rgba(113, 113, 122, 0.28);
+  --sf-scrollbar-hover: rgba(113, 113, 122, 0.48);
+}
+
+/* Theme tokens — Catppuccin Mocha */
+html[data-theme="mocha"] {
+  --sf-bg: #1e1e2e; /* Base */
+  --sf-sidebar: #11111b; /* Crust */
+  --sf-header: #181825; /* Mantle */
+  --sf-surface: #242536; /* Elevated Base */
+  --sf-surface-elevated: #181825; /* Mantle */
+  --sf-surface-muted: #313244; /* Surface 0 */
+  --sf-sheet: #181825; /* Mantle */
+  --sf-modal: #181825; /* Mantle */
+  --sf-hover: rgba(49, 50, 68, 0.55); /* Surface 0 */
+  --sf-active: #313244; /* Surface 0 */
+  --sf-border: #313244; /* Surface 0 */
+  --sf-border-subtle: rgba(49, 50, 68, 0.75);
+  --sf-border-strong: #585b70; /* Surface 2 */
+  --sf-text: #cdd6f4; /* Text */
+  --sf-text-secondary: #bac2de; /* Subtext 1 */
+  --sf-text-muted: #9399b2; /* Overlay 2 */
+  --sf-accent: #cba6f7; /* Mauve */
+  --sf-accent-soft: rgba(203, 166, 247, 0.16);
+  --sf-btn-active-bg: #cba6f7; /* Mauve */
+  --sf-btn-active-text: #11111b; /* Crust */
+  --sf-btn-active-border: #cba6f7;
+  --sf-scrollbar: rgba(147, 153, 178, 0.28);
+  --sf-scrollbar-hover: rgba(203, 166, 247, 0.45);
+}
+
+/* Theme tokens — Glassmorphism */
+html[data-theme="glass"] {
+  --sf-bg: #070a14;
+  --sf-sidebar: rgba(13, 17, 32, 0.46);
+  --sf-header: rgba(13, 17, 32, 0.42);
+  --sf-surface: rgba(255, 255, 255, 0.055);
+  --sf-surface-elevated: rgba(15, 20, 38, 0.78);
+  --sf-surface-muted: rgba(255, 255, 255, 0.075);
+  --sf-sheet: rgba(12, 16, 30, 0.78);
+  --sf-modal: rgba(13, 17, 32, 0.76);
+  --sf-hover: rgba(255, 255, 255, 0.065);
+  --sf-active: rgba(255, 255, 255, 0.13);
+  --sf-border: rgba(255, 255, 255, 0.12);
+  --sf-border-subtle: rgba(255, 255, 255, 0.085);
+  --sf-border-strong: rgba(255, 255, 255, 0.26);
+  --sf-text: #f8fafc;
+  --sf-text-secondary: #cbd5e1;
+  --sf-text-muted: #94a3b8;
+  --sf-accent: #38bdf8;
+  --sf-accent-soft: rgba(56, 189, 248, 0.18);
+  --sf-btn-active-bg: rgba(248, 250, 252, 0.94);
+  --sf-btn-active-text: #070a14;
+  --sf-btn-active-border: rgba(248, 250, 252, 0.94);
+  --sf-scrollbar: rgba(255, 255, 255, 0.18);
+  --sf-scrollbar-hover: rgba(255, 255, 255, 0.34);
+}
+
+/* Layered atmospheric mesh behind Glassmorphism surfaces */
+.sf-glass-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-color: #070a14;
+  background-image:
+    radial-gradient(64rem 46rem at 8% -6%, rgba(56, 189, 248, 0.22), transparent 62%),
+    radial-gradient(56rem 44rem at 92% 8%, rgba(129, 140, 248, 0.24), transparent 60%),
+    radial-gradient(52rem 40rem at 52% 106%, rgba(168, 85, 247, 0.2), transparent 64%),
+    radial-gradient(36rem 32rem at 22% 72%, rgba(20, 184, 166, 0.14), transparent 65%);
+}
+
+@layer base {
+  html {
+    font-family: var(--app-font);
+    font-feature-settings: "liga" 0, "calt" 1;
+    scroll-behavior: smooth;
+  }
+
+  .dark body {
+    letter-spacing: 0.005em;
+  }
+
+  /* Subtle, unobtrusive scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--sf-scrollbar);
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--sf-scrollbar-hover);
+  }
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
